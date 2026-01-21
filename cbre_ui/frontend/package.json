@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "echo 'Refresh your browser at: http://192.168.6.27:3000' && next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"

@@ -574,7 +574,7 @@ class GenericCrawler:
                 # Look for the Contact Button with a wait
                 btn_selector = '.cbre-c-pd-brokerCard__button'
                 try:
-                    self.page.wait_for_selector(btn_selector, timeout=10000)
+                    self.page.wait_for_selector(btn_selector, timeout=1000)
                 except:
                     print("    Timeout waiting for contact button (it might not exist).")
 
