@@ -581,15 +581,12 @@ class GenericCrawler:
                 contact_btn = self.page.query_selector(btn_selector)
                 
                 if contact_btn:
-                    print("    Clicking 'Contact For Details' button...")
+                    print("    Clicking 'Contact For Details' button (JS force)...")
                     try:
-                        # Try to scroll to it
-                        contact_btn.scroll_into_view_if_needed()
-                        # Force click in case it's covered or not "visible" by strict standards
-                        contact_btn.click(timeout=5000, force=True)
-                    except Exception as e:
-                        print(f"    Standard click failed ({e}), trying specific JS click...")
+                        # DIRECT JS Click - Fastest, ignores visibility/scroll headers
                         self.page.evaluate('el => el.click()', contact_btn)
+                    except Exception as e:
+                        print(f"    JS click failed: {e}")
                     
                     # Wait for modal to appear
                     modal_selector = '.cbre-c-pl-contact-form'
@@ -622,8 +619,7 @@ class GenericCrawler:
                                 data['Brokers'].append(broker_info)
                                 
                         if not data['Brokers']:
-                            # Fallback if structure is slightly different 
-                            print("    No brokers found in list, trying single extraction...")
+                            print("    No brokers found in list.")
                             
                     except Exception as e:
                         print(f"    Error waiting for or parsing modal: {e}")
@@ -632,6 +628,28 @@ class GenericCrawler:
                     
             except Exception as e:
                 print(f"    Error handling contact modal: {e}")
+
+            # --- 3. Extra Data: Brochure & Highlights ---
+            try:
+                # Brochure
+                # Look for any link containing text "Brochure"
+                brochure_el = self.page.query_selector('a:has-text("Brochure")')
+                if brochure_el:
+                    data['Brochure URL'] = brochure_el.get_attribute('href')
+                    print(f"    Found Brochure: {data['Brochure URL']}")
+                else:
+                    data['Brochure URL'] = "Not Found"
+
+                # Highlights (often in bullet points or specific sections)
+                # Strategy: Grab the main description text or specific ULs
+                desc_el = self.page.query_selector('.cbre-c-pd-overview__description') or self.page.query_selector('.cbre-c-text-media__description')
+                if desc_el:
+                    data['Description'] = desc_el.inner_text().strip()
+                else:
+                    data['Description'] = ""
+                    
+            except Exception as e:
+                print(f"    Error extracting extra data: {e}")
 
         except Exception as e:
             print(f"Error scraping property {property_url}: {e}")

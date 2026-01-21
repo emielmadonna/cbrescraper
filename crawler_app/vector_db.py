@@ -114,7 +114,8 @@ class VectorDB:
             address = prop_data.get('Address', '')
             
             # Create Text Blob
-            text_blob = f"Property: {name}. Located at: {address}."
+            description = prop_data.get('Description', '')
+            text_blob = f"Property: {name}. Located at: {address}. {description}"
             
             # Add broker names to text for searchability
             brokers = prop_data.get('Brokers', [])
@@ -133,7 +134,9 @@ class VectorDB:
                 'name': name,
                 'address': address,
                 'text': text_blob,
-                'broker_count': len(brokers)
+                'broker_count': len(brokers),
+                'brochure_url': prop_data.get('Brochure URL', ''),
+                'description': description
             }
             
             self.index.upsert(vectors=[(url, vector, metadata)])
@@ -204,8 +207,16 @@ class VectorDB:
                     name = md.get('name')
                     address = md.get('address')
                     broker_count = md.get('broker_count', 0)
+                    brochure = md.get('brochure_url') or "No brochure link"
+                    desc = md.get('description') or ""
                     
-                    part = f"Property: {name} at {address}. Listed by {broker_count} brokers."
+                    part = (
+                        f"Property: {name}\n"
+                        f"Address: {address}\n"
+                        f"Brochure: {brochure}\n"
+                        f"Description: {desc[:200]}...\n" # Truncate for brevity
+                        f"Listed by {broker_count} brokers."
+                    )
                     response_parts.append(part)
             
             if not response_parts:
