@@ -212,19 +212,40 @@ except Exception as e:
     # Do not crash the app, just leave vector_db as None (endpoints will handle it)
 
 class QueryRequest(BaseModel):
-    query: str
+    query: Optional[str] = None
+    args: Optional[dict] = None
     top_k: int = 3
-    
+    # Allow extra fields like 'call', 'name', etc.
+    class Config:
+        extra = "allow"
+
 @app.post("/api/query-voice")
 async def query_voice_generic(req: QueryRequest):
     """Generic query endpoint (searches all types)"""
-    logger.info(f"Voice Query received: {req.query}")
+    logger.info(f"Voice Query wrapper received: {req.dict()}")
+    
+    # Handle Retell's 'args' wrapper or direct call
+    actual_query = req.query
+    actual_top_k = req.top_k
+    
+    if req.args and isinstance(req.args, dict):
+        actual_query = req.args.get('query')
+        if req.args.get('top_k'):
+            actual_top_k = int(req.args.get('top_k'))
+            
+    if not actual_query:
+        logger.error("Voice Query failed: No query string provided.")
+        # Retell expects specific error format or just a polite failure string
+        return {"text": "I didn't receive a query to search for.", "variables": {}}
+
+    logger.info(f"Processing Query: {actual_query} (top_k={actual_top_k})")
+    
     if not vector_db: 
         logger.error("Voice Query failed: Database not initialized.")
         return {"text": "Database not initialized. Please check API keys.", "variables": {}}
     
     try:
-        res = vector_db.search(req.query, top_k=req.top_k)
+        res = vector_db.search(actual_query, top_k=actual_top_k)
         logger.info(f"Voice Query successful. Matches found: {len(res.get('text', '')) > 0}")
         # Merge variables into top level if requested, or keep separate. 
         # Retell often wants flat response for dynamic variables.
