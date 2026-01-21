@@ -312,7 +312,13 @@ class GenericCrawler:
                 """
                 contact_val = self.page.evaluate(js_contact)
                 data['Phone'] = " | ".join(contact_val['phones']) if contact_val['phones'] else "Not Found"
-                data['vCardURL'] = contact_val['vcard'] if contact_val['vcard'] else "Not Found"
+                if contact_val['vcard']:
+                    v = contact_val['vcard']
+                    if v.startswith('/'):
+                        v = f"https://www.cbre.com{v}"
+                    data['vCardURL'] = v
+                else:
+                    data['vCardURL'] = "Not Found"
             except Exception as e:
                 data['Phone'] = f"Error: {e}"
                 data['vCardURL'] = "Error"
@@ -635,7 +641,10 @@ class GenericCrawler:
                 # Look for any link containing text "Brochure"
                 brochure_el = self.page.query_selector('a:has-text("Brochure")')
                 if brochure_el:
-                    data['Brochure URL'] = brochure_el.get_attribute('href')
+                    b_url = brochure_el.get_attribute('href')
+                    if b_url and b_url.startswith('/'):
+                        b_url = f"https://www.cbre.com{b_url}"
+                    data['Brochure URL'] = b_url
                     print(f"    Found Brochure: {data['Brochure URL']}")
                 else:
                     data['Brochure URL'] = "Not Found"
