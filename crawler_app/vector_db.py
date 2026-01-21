@@ -1,71 +1,86 @@
 import os
 import json
-from pinecone import Pinecone, ServerlessSpec
-from openai import OpenAI
+import re
+import logging
 import time
+from pinecone import Pinecone, ServerlessSpec, SearchQuery
+from dotenv import load_dotenv
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def slugify(text):
+    """Generates a clean ID from text (e.g., 'Joe Riley' -> 'joe-riley')."""
+    if not text: return "unknown"
+    text = text.lower().strip()
+    text = re.sub(r'[^\w\s-]', '', text)
+    text = re.sub(r'[\s_-]+', '-', text)
+    text = re.sub(r'^-+|-+$', '', text)
+    return text
 
 class VectorDB:
     def __init__(self):
+        # Load env from backend dir (Optional, for local dev)
+        env_path = os.path.join(os.path.dirname(__file__), '..', 'cbre_ui', 'backend', '.env')
+        if os.path.exists(env_path):
+            load_dotenv(env_path)
+        else:
+            logger.info("Local .env not found, relying on system environment variables.")
+        
         self.api_key = os.getenv("PINECONE_API_KEY")
-        self.env = os.getenv("PINECONE_ENV") # Not strictly needed for new Pinecone SDK but good to have
-        self.index_name = os.getenv("PINECONE_INDEX", "cbre-data")
-        self.openai_key = os.getenv("OPENAI_API_KEY")
+        self.env = os.getenv("PINECONE_ENV") 
+        self.index_name = os.getenv("PINECONE_INDEX", "cbre")
+        self.index_host = "https://cbre-5eba2yo.svc.aped-4627-b74a.pinecone.io"
         
         self.pc = None
         self.index = None
-        self.openai = None
         
-        if self.api_key and self.openai_key:
+        self.vector_dimension = 1024 # User's index dimension
+        
+        if self.api_key:
             try:
-                print("Initializing Vector DB connection...")
+                logger.info(f"Connecting to Pinecone Host: {self.index_host}")
                 self.pc = Pinecone(api_key=self.api_key)
-                self.openai = OpenAI(api_key=self.openai_key)
-                
-                # Check if index exists, if not create (if we have permissions/serverless)
-                # For now assume index exists or we just connect
-                existing_indexes = [i.name for i in self.pc.list_indexes()]
-                if self.index_name not in existing_indexes:
-                    print(f"Index {self.index_name} not found. Creating...")
-                    try:
-                        self.pc.create_index(
-                            name=self.index_name,
-                            dimension=1536, # OpenAI text-embedding-3-small
-                            metric='cosine',
-                            spec=ServerlessSpec(
-                                cloud='aws',
-                                region='us-east-1'
-                            )
-                        )
-                        time.sleep(5) # Wait for init
-                    except Exception as e:
-                        print(f"Could not create index (might check permissions): {e}")
-                
-                self.index = self.pc.Index(self.index_name)
-                print(f"Connected to Pinecone Index: {self.index_name}")
-                
+                self.index = self.pc.Index(host=self.index_host)
+                logger.info(f"Connected to Pinecone Index successfully.")
             except Exception as e:
-                print(f"Error initializing VectorDB: {e}")
+                logger.error(f"Error initializing VectorDB: {e}")
+                raise e
         else:
-            print("VectorDB Warning: Missing API Keys (PINECONE_API_KEY or OPENAI_API_KEY). Vector features disabled.")
+            logger.error("CRITICAL: Missing PINECONE_API_KEY. Vector features will be broken.")
+            raise ValueError("Missing PINECONE_API_KEY")
 
     def get_embedding(self, text):
         if not self.openai:
             return None
         try:
             text = text.replace("\n", " ")
-            return self.openai.embeddings.create(input=[text], model="text-embedding-3-small").data[0].embedding
+            # Use text-embedding-3-small which supports dimension parameter
+            response = self.openai.embeddings.create(
+                input=[text], 
+                model="text-embedding-3-small",
+                dimensions=self.vector_dimension
+            )
+            return response.data[0].embedding
         except Exception as e:
             print(f"Error generating embedding: {e}")
             return None
 
-    def exists(self, url):
-        """Checks if a URL already exists in the index."""
+    def exists(self, url, namespace=None):
+        """Checks if a URL already exists in the index/namespace by querying metadata."""
         if not self.index: return False
         try:
-            # Pinecone fetch by list of IDs
-            res = self.index.fetch(ids=[url])
-            return url in res.get('vectors', {})
-        except:
+            # Query by 'url' metadata field instead of ID
+            res = self.index.query(
+                vector=[0.0] * self.vector_dimension,
+                top_k=1,
+                filter={'url': url},
+                namespace=namespace
+            )
+            return len(res.get('matches', [])) > 0
+        except Exception as e:
+            # print(f"Exists check error: {e}")
             return False
 
     def upsert_person(self, person_data):
@@ -75,45 +90,49 @@ class VectorDB:
         try:
             url = person_data.get('URL', '')
             if not url: return
+            
+            namespace = "seattle_directory"
 
-            # DUPLICATE CHECK
-            if self.exists(url):
-                print(f"    - Skipping (Already in Vector DB): {url}")
+            # DUPLICATE CHECK (In specific namespace)
+            if self.exists(url, namespace=namespace):
+                print(f"    - Skipping (Already in Namespace {namespace}): {url}")
                 return
 
-            # Create Text Blob for Search
-            # "Joe Riley - Senior Vice President at CBRE. Seattle, WA. Experience: ..."
-            # Create Search Text Blob
+            # Structured Search Text (The "Brain")
             name = f"{person_data.get('First Name', '')} {person_data.get('Last Name', '')}".strip()
-            location = f"{person_data.get('City', '')}, {person_data.get('State', '')}".strip(", ")
-            experience = person_data.get('Experience', '')
-            if len(experience) > 6000: experience = experience[:6000]
+            title = person_data.get('Title', 'N/A')
+            specialties = person_data.get('Specialties', 'N/A')
+            # Extract keywords for searchable identity
+            # Layout: "Broker Name: [Name]. Specialty: [Specialties]. Role: [Title] at CBRE Seattle."
+            text_blob = f"Broker Name: {name}. Specialty: {specialties}. Role: {title} at CBRE Seattle."
             
-            text_blob = f"NAME: {name}\nLOCATION: {location}\nEXPERIENCE: {experience}"
-            
-            # Generate Embedding
-            vector = self.get_embedding(text_blob)
-            if not vector: return
+            # ID Structure: "broker-slugified-name"
+            record_id = f"broker-{slugify(name)}"
+            if record_id == "broker-unknown": record_id = f"broker-{slugify(url)}" # Fallback
 
-            # Metadata (Strictly structured)
+            # Metadata (Exact March Pilot Layout)
             metadata = {
                 'type': 'person',
-                'url': url,
-                'first_name': person_data.get('First Name', ''),
-                'last_name': person_data.get('Last Name', ''),
-                'name': name,
-                'phones': person_data.get('Phone', ''), # Usually a string or list
+                'full_name': name,
+                'phone_number': person_data.get('phone_number') or '',
+                'mobile_number': person_data.get('mobile_phoneNumber') or '',
                 'email': person_data.get('Email', ''),
-                'city': person_data.get('City', ''),
-                'state': person_data.get('State', ''),
-                'text': text_blob,
-                'vcard': person_data.get('vCardURL', ''),
-                'cbre_listings_url': person_data.get('ListingsURL', '')
+                'vcard_url': person_data.get('vCardURL', ''),
+                'specialty_tags': person_data.get('specialty_tags', []),
+                'bio': person_data.get('bio_summary', ''),
+                'url': url
             }
             
-            # Upsert
-            self.index.upsert(vectors=[(url, vector, metadata)])
-            print(f"Successfully upserted person to Pinecone: {name}")
+            # Upsert (Integrated Inference v6/v7: Pass 'text' as field for llama-text-embed-v2)
+            self.index.upsert_records(
+                namespace=namespace,
+                records=[{
+                    "_id": record_id,
+                    "text": text_blob,
+                    **metadata
+                }]
+            )
+            logger.info(f"Successfully upserted person to {namespace}: {record_id}")
             
         except Exception as e:
             print(f"Error upserting person: {e}")
@@ -125,139 +144,167 @@ class VectorDB:
         try:
             url = prop_data.get('URL', '')
             if not url: return
+            
+            namespace = "seattle_listings"
 
             # DUPLICATE CHECK
-            if self.exists(url):
-                print(f"    - Skipping (Already in Vector DB): {url}")
+            if self.exists(url, namespace=namespace):
+                print(f"    - Skipping (Already in Namespace {namespace}): {url}")
                 return
 
             name = prop_data.get('Property Name', 'Unknown Property')
             address = prop_data.get('Address', '')
+            prop_type = prop_data.get('Type', 'Commercial space')
             
-            # Create Search Text Blob
-            description = prop_data.get('Description', '')
-            text_blob = f"PROPERTY: {name}\nADDRESS: {address}\nDESCRIPTION: {description}"
+            # Record Layout: "Property: X. Address: Y. Type: Z."
+            text_blob = f"Property: {name}. Address: {address}. Type: {prop_type}."
             
-            # Map Brokers for metadata and search
+            # ID Structure: "prop-slugified-name"
+            prop_id = prop_data.get('Property ID') or slugify(name)[:20]
+            record_id = f"prop-{prop_id}"
+
+            # Primary Broker logic
             brokers = prop_data.get('Brokers', [])
-            broker_meta = []
-            if brokers:
-                broker_names = []
-                for b in brokers:
-                    b_name = b.get('Name', 'Unknown')
-                    broker_names.append(b_name)
-                    broker_meta.append({
-                        'name': b_name,
-                        'phones': b.get('Phones', []),
-                        'emails': b.get('Emails', [])
-                    })
-                text_blob += f"\nAGENTS: {', '.join(broker_names)}"
+            primary_broker = brokers[0].get('Name', 'Not Listed') if brokers else "Not Listed"
+            broker_phone = brokers[0].get('phone_number', '') if brokers else ""
 
-            # Generate Embedding
-            vector = self.get_embedding(text_blob)
-            if not vector: return
-
-            # Metadata (Strictly structured for clean querying)
+            # Metadata (Exact March Pilot Layout)
             metadata = {
                 'type': 'property',
-                'url': url,
-                'name': name,
                 'address': address,
-                'text': text_blob,
-                'broker_count': len(brokers),
-                'brokers_json': json.dumps(broker_meta), # Store complex list as JSON string
                 'brochure_url': prop_data.get('Brochure URL', 'Not Found'),
-                'description': description
+                'primary_broker': primary_broker,
+                'broker_phone': broker_phone,
+                'sq_ft_range': prop_data.get('SqFt', 'N/A'),
+                'url': url
             }
             
-            self.index.upsert(vectors=[(url, vector, metadata)])
-            print(f"Successfully upserted property to Pinecone: {name}")
+            # Upsert (Integrated Inference v6/v7)
+            self.index.upsert_records(
+                namespace=namespace,
+                records=[{
+                    "_id": record_id,
+                    "text": text_blob,
+                    **metadata
+                }]
+            )
+            logger.info(f"Successfully upserted property to {namespace}: {record_id}")
             
         except Exception as e:
             print(f"Error upserting property: {e}")
 
     def search(self, query_text, top_k=3, filter_type=None):
         """
-        Searches the vector DB and returns formatted text for a Voice Agent.
+        Searches specific namespaces for Structured RAG.
         :param filter_type: 'person' or 'property' or None
         """
         if not self.index:
-            return "Vector database is not configured."
+            return {"text": "Vector database is not configured.", "variables": {}}
             
         try:
-            vector = self.get_embedding(query_text)
-            if not vector: return "Could not generate embedding for query."
+            # Select Namespace
+            namespace = None
+            if filter_type == 'person': namespace = "seattle_directory"
+            elif filter_type == 'property': namespace = "seattle_listings"
+            else: namespace = "seattle_directory" # Default to people if unspeced for now
             
-            # Build filter dict
-            query_filter = {}
-            if filter_type:
-                query_filter['type'] = filter_type
+            # For Integrated Inference v6/v7, we use search_records with SearchQuery
+            query_obj = SearchQuery(
+                inputs={"text": query_text},
+                top_k=top_k,
+                filter={'type': filter_type} if filter_type else None
+            )
+            logger.info(f"DEBUG: Searching namespace '{namespace}' with query: {query_obj}")
             
-            results = self.index.query(
-                vector=vector, 
-                top_k=top_k, 
-                include_metadata=True,
-                filter=query_filter if query_filter else None
+            results = self.index.search_records(
+                namespace=namespace,
+                query=query_obj
             )
             
-            matches = results.get('matches', [])
+            # DEBUG RAW RESPONSE
+            logger.info(f"DEBUG: Raw Search Results: {results}")
+
+            matches = []
+            
+            # Helper to extract hits from various response formats
+            hits = []
+            if hasattr(results, 'result'): # v7 object style
+                hits = getattr(results.result, 'hits', [])
+            elif isinstance(results, dict):
+                # Check for nested 'result' key which contains 'hits'
+                if 'result' in results and 'hits' in results['result']:
+                    hits = results['result']['hits']
+                elif 'hits' in results:
+                    hits = results['hits']
+            
+            # If hits is still empty/None, check if results object itself has hits (v6 style)
+            if not hits and hasattr(results, 'hits'):
+                 hits = results.hits
+
+            for hit in hits:
+                # hit might be object or dict
+                _id = getattr(hit, '_id', None) or hit.get('_id')
+                # fields contains our metadata
+                fields = getattr(hit, 'fields', {}) or hit.get('fields', {})
+                
+                matches.append({
+                    'id': _id,
+                    'metadata': fields
+                })
             if not matches:
-                # Fallback message?
-                return "I couldn't find any relevant information in the database."
+                return {"text": "I couldn't find any relevant information in the database.", "variables": {}}
             
             # Format response for Voice / API
             response_parts = []
+            top_variables = {}
             
             for m in matches:
-                md = m.metadata
-                score = m.score
-                if score < 0.70: continue # Threshold
+                md = m['metadata']
+                # score = m.score # Removed score check for now as we trust top_k or add it to match dict earlier
                 
                 if md.get('type') == 'person':
-                    # Detailed Person Response
-                    first = md.get('first_name')
-                    last = md.get('last_name')
-                    phones = md.get('phones', 'No phone available')
-                    vcard = md.get('vcard') or "No vCard"
-                    city = md.get('city')
-                    state = md.get('state')
-                    listings_url = md.get('cbre_listings_url')
+                    # Structured Record Mapping
+                    name = md.get('full_name')
                     
-                    # Format as a structured text block for the Voice Agent to consume
+                    # Prioritize Mobile for Retell Target, fallback to Office
+                    mobile = md.get('mobile_number')
+                    office = md.get('phone_number')
+                    target = mobile if mobile else office
+                    
+                    vcard = md.get('vcard_url') or "N/A"
+                    
                     part = (
-                        f"Name: {first} {last}\n"
-                        f"Location: {city}, {state}\n"
-                        f"Phones: {phones}\n"
-                        f"vCard: {vcard}\n"
-                        f"Listings: {listings_url}\n"
+                        f"Target: {name}. Phone: {target}. vCard: {vcard}. "
+                        f"Bio: {md.get('bio', '')[:200]}..."
                     )
+                    # For Retell AI (Special top-level keys)
+                    if not top_variables:
+                        top_variables = {"target_phone": target, "vcard_url": vcard}
                     response_parts.append(part)
                     
                 elif md.get('type') == 'property':
-                    # Property Response
-                    name = md.get('name')
-                    address = md.get('address')
-                    broker_count = md.get('broker_count', 0)
-                    brochure = md.get('brochure_url') or "No brochure link"
-                    desc = md.get('description') or ""
+                    # Structured Record Mapping
+                    addr = md.get('address')
+                    brochure = md.get('brochure_url')
+                    broker = md.get('primary_broker')
+                    broker_phone = md.get('broker_phone')
                     
                     part = (
-                        f"Property: {name}\n"
-                        f"Address: {address}\n"
-                        f"Brochure: {brochure}\n"
-                        f"Description: {desc[:200]}...\n" # Truncate for brevity
-                        f"Listed by {broker_count} brokers."
+                        f"Property at {addr}. Brochure: {brochure}. "
+                        f"Contact: {broker} ({broker_phone})."
                     )
+                    # For Retell AI (Map listing agent phone)
+                    if not top_variables:
+                        top_variables = {"target_phone": broker_phone}
                     response_parts.append(part)
             
             if not response_parts:
-                return "I couldn't find any relevant information in the database for that query."
+                return {"text": "No relevant info found.", "variables": {}}
                 
-            # If specific person query, return clearer separation
-            if filter_type == 'person':
-                 return "Here are the details found:\n\n" + "\n---\n".join(response_parts)
-
-            return "Here is what I found: " + " ".join(response_parts)
+            return {
+                "text": "Here is what I found:\n\n" + "\n---\n".join(response_parts),
+                "variables": top_variables
+            }
             
         except Exception as e:
-            return f"Error querying database: {e}"
+            return {"text": f"Error querying database: {e}", "variables": {}}

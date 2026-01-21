@@ -9,7 +9,7 @@ except ImportError:
     from vector_db import VectorDB
 
 class GenericCrawler:
-    def __init__(self, headless=True, disable_vectors=False):
+    def __init__(self, headless=False, disable_vectors=False):
         self.headless = headless
         self.disable_vectors = disable_vectors
         self.playwright = None
@@ -24,13 +24,50 @@ class GenericCrawler:
             self.vector_db = None
             print("Vector DB disabled (Test Mode/Dry Run).")
 
+    def exists(self, url, namespace=None):
+        """Checks if a URL already exists in the vector DB by querying metadata."""
+        if not self.vector_db:
+            return False
+        return self.vector_db.exists(url, namespace)
+
+    def format_phone(self, phone_str):
+        """Standardizes phone numbers to E.164 and strips emojis."""
+        if not phone_str or phone_str == "Not Found":
+            return None
+        import re
+        # Strip ALL emojis and non-ASCII characters
+        cleaned = re.sub(r'[^\x00-\x7F]+', '', phone_str)
+        # Strip all but digits and +
+        digits = re.sub(r'[^\d+]', '', cleaned)
+        
+        if not digits:
+            return None
+            
+        # Handle US missing prefix (assuming 10 digits = US)
+        # Handle cases like "tel:12061234567" or "+1206..."
+        if digits.startswith('+'):
+            return digits
+        
+        if len(digits) == 10:
+            return "+1" + digits
+        elif len(digits) == 11 and digits.startswith('1'):
+            return "+" + digits
+        elif len(digits) > 10:
+            return "+" + digits
+            
+        return "+" + digits # Fallback base format
+
     def start_browser(self):
         """Starts the browser instance."""
         if not self.playwright:
             print(f"Starting browser (Headless={self.headless})...")
             self.playwright = sync_playwright().start()
             self.browser = self.playwright.chromium.launch(headless=self.headless)
-            self.context = self.browser.new_context()
+            # Set a standard desktop viewport to avoid mobile layouts/detection
+            self.context = self.browser.new_context(
+                viewport={'width': 1280, 'height': 800},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             self.page = self.context.new_page()
 
     def close_browser(self):
@@ -274,14 +311,15 @@ class GenericCrawler:
             try:
                 js_contact = """
                     () => {
-                        const res = {phones: [], vcard: null, email: null};
+                        const res = {phone_data: [], vcard: null, email: null};
                         const clean = (s) => s ? s.replace('tel:', '').replace('mailto:', '').trim() : "";
 
                         // 1. Hero Section
                         const hero = document.querySelector('.cbre-c-personHero');
                         if (hero) {
                             hero.querySelectorAll('a[href^="tel:"]').forEach(a => {
-                                res.phones.push(`${a.getAttribute('aria-label')||'Phone'}: ${clean(a.getAttribute('href'))}`);
+                                const label = a.getAttribute('aria-label') || 'Phone';
+                                res.phone_data.push({label: label, number: clean(a.getAttribute('href'))});
                             });
                             hero.querySelectorAll('a[href^="mailto:"]').forEach(a => {
                                 if(!res.email) res.email = clean(a.getAttribute('href'));
@@ -294,7 +332,7 @@ class GenericCrawler:
                         const office = document.querySelector('.cbre-c-inlineCards--office');
                         if (office) {
                             office.querySelectorAll('a[href^="tel:"]').forEach(a => {
-                                res.phones.push(`Office: ${clean(a.getAttribute('href'))}`);
+                                res.phone_data.push({label: 'Office', number: clean(a.getAttribute('href'))});
                             });
                             office.querySelectorAll('a[href^="mailto:"]').forEach(a => {
                                 if(!res.email) res.email = clean(a.getAttribute('href'));
@@ -311,7 +349,27 @@ class GenericCrawler:
                     }
                 """
                 contact_val = self.page.evaluate(js_contact)
-                data['Phone'] = " | ".join(list(set(contact_val['phones']))) if contact_val['phones'] else "Not Found"
+                
+                # Map Categorized Phones
+                data['phone_number'] = None
+                data['mobile_phoneNumber'] = None
+                data['phone_numbers'] = [] # Keep for internal list
+                
+                for p_item in contact_val['phone_data']:
+                    label = p_item['label'].lower()
+                    clean_num = self.format_phone(p_item['number'])
+                    if not clean_num: continue
+                    
+                    if clean_num not in data['phone_numbers']:
+                        data['phone_numbers'].append(clean_num)
+                    
+                    if any(k in label for k in ['cell', 'mobile', 'handset']):
+                        if not data['mobile_phoneNumber']: data['mobile_phoneNumber'] = clean_num
+                    else:
+                        if not data['phone_number']: data['phone_number'] = clean_num
+                
+                # Legacy fields for backward compat
+                data['Phone'] = " | ".join(data['phone_numbers']) if data['phone_numbers'] else "Not Found"
                 data['Email'] = contact_val['email'] or "Not Found"
                 if contact_val['vcard']:
                     v = contact_val['vcard']
@@ -430,6 +488,48 @@ class GenericCrawler:
                     exp_val = self.page.evaluate(js_script) or "Not Found"
                     
                 data['Experience'] = exp_val
+                
+                # --- 4.5 Extract Specialties & Pilot Keywords ---
+                try:
+                    js_spec = """
+                        () => {
+                            const bioEl = document.querySelector('.cbre-c-inlineBodyCard__description.cbre-c-wysiwyg');
+                            const bioText = bioEl ? bioEl.innerText : "";
+                            
+                            const specs = [];
+                            document.querySelectorAll('.cbre-c-inlineCards__specialtyTag, .cbre-c-cl-tag').forEach(el => {
+                                specs.push(el.innerText.trim());
+                            });
+                            
+                            // Heuristic keywords for March Pilot (Case-Insensitive check)
+                            const keywords = ["Industrial", "Logistics", "Kent Valley", "South Seattle", "Tenant Representation", "Landlord Representation", "Office", "Retail", "Investment Sales"];
+                            const foundKeywords = keywords.filter(k => {
+                                const rel = new RegExp(k, 'i');
+                                return rel.test(bioText);
+                            });
+                            
+                            // Combine structured tags and bio keywords
+                            const allSpecs = [...new Set([...specs, ...foundKeywords])];
+                            
+                            // Get first paragraph / sentence for bio summary
+                            const firstParagraph = bioText.split('\\n\\n')[0] || bioText.split(/[.!]/)[0];
+
+                            return {
+                                specialties: allSpecs.join(', '),
+                                specialty_tags: allSpecs,
+                                bio_summary: firstParagraph.trim()
+                            };
+                        }
+                    """
+                    spec_res = self.page.evaluate(js_spec)
+                    data['Specialties'] = spec_res['specialties'] or "N/A"
+                    data['specialty_tags'] = spec_res['specialty_tags']
+                    data['bio_summary'] = spec_res['bio_summary'] or data.get('Experience', '')[:500]
+                except:
+                    data['Specialties'] = "N/A"
+                    data['specialty_tags'] = []
+                    data['bio_summary'] = data.get('Experience', '')[:500]
+
             except Exception as e:
                 data['Experience'] = f"Error: {e}"
 
@@ -554,17 +654,39 @@ class GenericCrawler:
             self.start_browser()
             
         try:
-            self.page.goto(property_url, timeout=30000, wait_until='domcontentloaded')
+            self.page.goto(property_url, timeout=45000, wait_until='domcontentloaded')
+            
+            # Dismiss Cookie Banner (OneTrust/Generic) if present
+            try:
+                cookie_btn = self.page.query_selector('#onetrust-accept-btn-handler, #onetrust-consent-sdk button, .cookie-banner button')
+                if cookie_btn and cookie_btn.is_visible():
+                    print("    Dismissing cookie banner...")
+                    cookie_btn.click()
+                    time.sleep(1)
+            except: pass
+
+            # Wait for meaningful content
+            try:
+                self.page.wait_for_selector('h1', timeout=10000)
+                # Give SPA a moment to fill text
+                for _ in range(5):
+                    if len(self.page.inner_text('h1').strip()) > 5: break
+                    time.sleep(1)
+            except: pass
             
             # --- 1. Basic Info (Name & Initial Address) ---
             title_el = self.page.query_selector('h1')
             if title_el:
                 title_text = title_el.inner_text().strip()
-                # If title is multiline, split name and address
-                t_parts = [p.strip() for p in title_text.split('\n') if p.strip()]
-                data['Property Name'] = t_parts[0]
-                if len(t_parts) > 1:
-                    data['Address'] = ", ".join(t_parts[1:])
+                # Filter out generic placeholder titles
+                if title_text.lower() in ['www.cbre.com', 'cbre']:
+                    title_text = ""
+                
+                if title_text:
+                    t_parts = [p.strip() for p in title_text.split('\n') if p.strip()]
+                    data['Property Name'] = t_parts[0]
+                    if len(t_parts) > 1:
+                        data['Address'] = ", ".join(t_parts[1:])
 
             # --- 2. Initial Data Scan (Static Contacts & Brochure) ---
             # Some pages have contacts visible without a modal
@@ -574,111 +696,179 @@ class GenericCrawler:
                 if any(k in txt for k in ["contact", "agent", "broker"]):
                     # If we find a block with a phone or email pattern, extract it
                     import re
-                    phones = list(set(re.findall(r'(\d{3}[-\.\s]??\d{3}[-\.\s]??\d{4})', s_el.inner_text())))
+                    # Improved: Check for tel: links first
+                    tel_links = s_el.query_selector_all('a[href^="tel:"]')
+                    clean_phones = []
+                    mobile_phone = None
+                    office_phone = None
+                    
+                    for tel in tel_links:
+                        raw = tel.get_attribute('href').replace('tel:', '')
+                        label = tel.inner_text().lower() or tel.get_attribute('aria-label') or ""
+                        cleaned = self.format_phone(raw)
+                        if cleaned:
+                            if any(k in label for k in ['cell', 'mobile', 'handset']) and not mobile_phone:
+                                mobile_phone = cleaned
+                            elif not office_phone:
+                                office_phone = cleaned
+                            clean_phones.append(cleaned)
+                            
+                    # Fallback to regex if no tel links
+                    if not clean_phones:
+                        raw_regex = list(set(re.findall(r'(\d{3}[-\.\s]??\d{3}[-\.\s]??\d{4})', s_el.inner_text())))
+                        for r in raw_regex:
+                            c = self.format_phone(r)
+                            if c: clean_phones.append(c)
+                            if not office_phone: office_phone = c
+
                     emails = list(set(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', s_el.inner_text())))
-                    if phones or emails:
+                    if clean_phones or emails:
                         name_el = s_el.query_selector('strong, h3, h4, [class*="name"]')
                         name = name_el.inner_text().strip() if name_el else "Contact"
-                        data['Brokers'].append({'Name': name, 'Phones': phones, 'Emails': emails})
+                        data['Brokers'].append({
+                            'Name': name, 
+                            'phone_number': office_phone,
+                            'mobile_phoneNumber': mobile_phone,
+                            'phone_numbers': clean_phones,
+                            'Emails': emails
+                        })
                         print(f"    - Static Agent Found: {name}")
 
-            # Improved Brochure Detection
-            try:
-                # Look for links or buttons containing "Brochure"
+            # Greedy Brochure Detection (Hero, Modal, Spaces)
+            def find_brochure():
                 search_js = """
                 () => {
-                    const els = Array.from(document.querySelectorAll('a, button, div.cbre-c-pd-hero__button'));
-                    const b = els.find(el => el.innerText.includes('Brochure'));
-                    if (!b) return null;
+                    const results = [];
+                    // 1. Check all elements with data attributes commonly used for links
+                    document.querySelectorAll('[data-pill-link-info], [data-url], [data-href]').forEach(el => {
+                        const url = el.getAttribute('data-pill-link-info') || el.getAttribute('data-url') || el.getAttribute('data-href');
+                        const label = (el.innerText + (el.getAttribute('data-pill-asset-type') || "")).toLowerCase();
+                        if (url && label.includes('brochure')) results.push(url);
+                    });
                     
-                    // Priority 1: Direct link
-                    if (b.tagName === 'A') return b.href;
-                    
-                    // Priority 2: Closest link
-                    const pLink = b.closest('a');
-                    if (pLink) return pLink.href;
-                    
-                    const cLink = b.querySelector('a');
-                    if (cLink) return cLink.href;
-                    
-                    return null;
+                    // 2. Check all anchors and buttons with "Brochure" text
+                    document.querySelectorAll('a, button, div.cbre-c-pd-hero__button, div[class*="pill"], div.cbre-c-pd-collateralBar__pillContainer').forEach(el => {
+                        if (el.innerText.toLowerCase().includes('brochure')) {
+                            const href = el.href || el.getAttribute('href');
+                            if (href) results.push(href);
+                            else {
+                                // Check children/parents for href
+                                const pLink = el.closest('a');
+                                if (pLink) results.push(pLink.href);
+                                const cLink = el.querySelector('a');
+                                if (cLink) results.push(cLink.href);
+                            }
+                        }
+                    });
+                    return results;
                 }
                 """
-                b_url = self.page.evaluate(search_js)
-                if b_url:
-                    # STRICT CHECK: Reject if it's just the current page URL or doesn't look like a file/asset
+                candidates = self.page.evaluate(search_js)
+                if candidates:
                     current_path = property_url.split('?')[0].rstrip('/')
-                    check_url = b_url.split('?')[0].rstrip('/')
-                    
-                    is_file = any(ext in b_url.lower() for ext in ['.pdf', '.doc', '.zip', 'fileassets', 'resources'])
-                    
-                    if check_url != current_path and is_file:
+                    for b_url in candidates:
+                        if not b_url or b_url.startswith('#') or 'javascript:' in b_url: continue
                         if b_url.startswith('/'): b_url = f"https://www.cbre.com{b_url}"
-                        data['Brochure URL'] = b_url
-                        print(f"    Found Brochure (Verified): {data['Brochure URL']}")
-                    else:
-                        print(f"    Ignored False Brochure (Match/Non-file): {b_url[:50]}...")
-            except: pass
+                        
+                        check_url = b_url.split('?')[0].rstrip('/')
+                        is_likely_file = any(ext in b_url.lower() for ext in ['.pdf', '.doc', '.zip', 'fileassets', 'resources', 'brochure'])
+                        
+                        if check_url != current_path and is_likely_file:
+                            return b_url
+                return None
 
-            # --- 3. Contact For Details Modal (Optional Fallback) ---
-            if not data['Brokers']:
-                try:
-                    btn_selector = '.cbre-c-pd-brokerCard__button'
-                    # Multiple buttons might exist: iterate and click the first one that works
-                    btns = self.page.query_selector_all(btn_selector)
-                    for i, btn in enumerate(btns):
-                        try:
-                            if btn.is_visible():
-                                print(f"    Clicking 'Contact For Details' button {i+1}...")
-                                self.page.evaluate('el => el.click()', btn)
-                                break
-                        except: continue
-                    
-                    modal_selector = '.cbre-c-pl-contact-form'
+            b_link = find_brochure()
+            if b_link: 
+                data['Brochure URL'] = b_link
+                print(f"    Found Brochure (Main): {data['Brochure URL']}")
+
+            # --- 3. Contact For Details Modal (Associated Contacts) ---
+            try:
+                # Force click modal even if we have some brokers, to see if more/brochure exists
+                btn_selector = '.cbre-c-pd-brokerCard__button, button:has-text("Contact For Details"), button:has-text("Contact Agent"), .cbre-c-pd-brokerCard__contact-button'
+                btns = self.page.query_selector_all(btn_selector)
+                for i, btn in enumerate(btns):
                     try:
-                        self.page.wait_for_selector(modal_selector, timeout=4000)
-                        print("    Modal appeared.")
-                    except:
-                        # Sometimes it's a different selector or just text on page
-                        print("    Contact modal didn't appear in time.")
+                        if btn.is_visible():
+                            print(f"    Opening Modal (Button {i+1})...")
+                            self.page.evaluate('el => el.click()', btn)
+                            break
+                    except: continue
+                
+                # Check for Modal
+                try:
+                    self.page.wait_for_selector('.cbre-c-pl-contact-form, .cbre-c-pl-contact-form__content', timeout=5000)
+                    print("    Modal appeared.")
+                    time.sleep(1) # Wait for brokers to render
+                    # Try finding brochure again in modal
+                    b_link_modal = find_brochure()
+                    if b_link_modal and data['Brochure URL'] == 'Not Found':
+                        data['Brochure URL'] = b_link_modal
+                        print(f"    Found Brochure (Modal): {data['Brochure URL']}")
+                except:
+                    print("    Contact modal didn't appear in time.")
                     
-                    # Try primary selector first, fallback to any cards
-                    brokers_els = self.page.query_selector_all('.cbre-c-pl-contact-form__broker-content') or \
-                                  self.page.query_selector_all('.cbre-c-pl-contact-form__broker') or \
-                                  self.page.query_selector_all('[class*="broker"]')
+                # Try primary selector first, fallback to any cards
+                brokers_els = self.page.query_selector_all('.cbre-c-pl-contact-form__broker-content') or \
+                              self.page.query_selector_all('.cbre-c-pl-contact-form__broker') or \
+                              self.page.query_selector_all('[class*="broker"]')
 
-                    for broker_el in brokers_els:
-                        broker_info = {}
-                        name_el = broker_el.query_selector('[class*="name"]') or broker_el.query_selector('strong, span, h4')
-                        if name_el:
-                            broker_info['Name'] = name_el.inner_text().strip()
-                            
-                        # Phones & Emails
-                        phones_els = broker_el.query_selector_all('a[href^="tel:"]')
-                        broker_info['Phones'] = [p.inner_text().strip() for p in phones_els]
+                for broker_el in brokers_els:
+                    broker_info = {}
+                    name_el = broker_el.query_selector('[class*="name"]') or broker_el.query_selector('strong, span, h4')
+                    if name_el:
+                        broker_info['Name'] = name_el.inner_text().strip()
                         
-                        email_els = broker_el.query_selector_all('a[href^="mailto:"]')
-                        broker_info['Emails'] = [e.inner_text().replace('mailto:', '').strip() for e in email_els]
-                        
-                        if broker_info.get('Name') or broker_info.get('Phones'):
-                            data['Brokers'].append(broker_info)
-                            print(f"    - Agent Found: {broker_info.get('Name')}")
+                    # Phones & Emails
+                    phones_els = broker_el.query_selector_all('a[href^="tel:"]')
+                    raw_phone_data = []
+                    for p_el in phones_els:
+                        number = p_el.get_attribute('href').replace('tel:', '').strip()
+                        # Check link text, aria-label, and parent text for labels
+                        label = p_el.inner_text().lower() or p_el.get_attribute('aria-label') or ""
+                        parent = p_el.query_selector('xpath=..')
+                        parent_text = parent.inner_text().lower() if parent else ""
+                        full_context = f"{label} {parent_text}"
+                        raw_phone_data.append({'label': full_context, 'number': number})
+                    
+                    clean_phones = []
+                    mobile_phone = None
+                    office_phone = None
+                    for pi in raw_phone_data:
+                        c = self.format_phone(pi['number'])
+                        if c:
+                            if any(k in pi['label'] for k in ['cell', 'mobile', 'handset']) and not mobile_phone:
+                                mobile_phone = c
+                            elif not office_phone:
+                                office_phone = c
+                            clean_phones.append(c)
                             
-                    if not data['Brokers']:
-                        print("    No brokers found in modal. Trying greedy text search...")
-                        try:
-                            txt = self.page.inner_text(modal_selector)
-                            import re
-                            emails = list(set(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', txt)))
-                            phones = list(set(re.findall(r'(\d{3}[-\.\s]??\d{3}[-\.\s]??\d{4})', txt)))
-                            if emails or phones:
-                                data['Brokers'].append({'Name': 'Alternative Contact', 'Phones': phones, 'Emails': emails})
-                                print(f"    - Greedy Contacts Found: {len(phones)} phones, {len(emails)} emails")
-                        except: pass
-                    if not btns:
-                        print("    'Contact For Details' button not found.")
-                except Exception as e:
-                    print(f"    Modal handling skipped/failed: {e}")
+                    broker_info['phone_number'] = office_phone
+                    broker_info['mobile_phoneNumber'] = mobile_phone
+                    broker_info['phone_numbers'] = clean_phones
+                    
+                    email_els = broker_el.query_selector_all('a[href^="mailto:"]')
+                    broker_info['Emails'] = [e.inner_text().replace('mailto:', '').strip() for e in email_els]
+                    
+                    if broker_info.get('Name') or broker_info.get('phone_numbers'):
+                        data['Brokers'].append(broker_info)
+                        print(f"    - Agent Found: {broker_info.get('Name')}")
+                        
+                if not data['Brokers']:
+                    print("    No brokers found in modal. Trying greedy text search...")
+                    try:
+                        modal_sel = '.cbre-c-pl-contact-form, .cbre-c-pl-contact-form__content'
+                        txt = self.page.inner_text(modal_sel)
+                        import re
+                        emails = list(set(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', txt)))
+                        raw_phones = list(set(re.findall(r'(\d{3}[-\.\s]??\d{3}[-\.\s]??\d{4})', txt)))
+                        clean_phones = [self.format_phone(p) for p in raw_phones if self.format_phone(p)]
+                        if emails or clean_phones:
+                            data['Brokers'].append({'Name': 'Alternative Contact', 'phone_numbers': clean_phones, 'Emails': emails})
+                            print(f"    - Greedy Contacts Found: {len(clean_phones)} phones, {len(emails)} emails")
+                    except: pass
+            except Exception as e:
+                print(f"    Modal handling skipped/failed: {e}")
 
             # --- 4. Precision Extraction (Address & Highlights) ---
             try:
@@ -728,10 +918,15 @@ class GenericCrawler:
                     const m = document.querySelector('.cbre-c-pd-overview__description, .cbre-c-pd-description, .cbre-c-pd-text-media__description, #overview');
                     if (m) fb = m.innerText.trim().slice(0, 1500);
                     
-                    return { highlights: sections['Highlights']||"", overview: sections['Overview']||"", fallback: fb, address: addr };
+                    let sqft = "";
+                    const sqft_match = document.body.innerText.match(/(\\d{1,3}(?:,\\d{3})*\\s*-\\s*)?\\d{1,3}(?:,\\d{3})*\\s*SF/i);
+                    if (sqft_match) sqft = sqft_match[0];
+
+                    return { highlights: sections['Highlights']||"", overview: sections['Overview']||"", fallback: fb, address: addr, sqft: sqft };
                 }
                 """
                 res = self.page.evaluate(js_script)
+                data['SqFt'] = res.get('sqft', 'N/A')
                 
                 # Format Description
                 parts = []

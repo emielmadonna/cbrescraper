@@ -7,10 +7,55 @@ import time
 from crawler_app.scraper import GenericCrawler
 from crawler_app.vector_db import VectorDB
 
+def print_person_summary(p_data):
+    """Prints a clean summary of extracted person data."""
+    print(f"\n👤 [PERSON FOUND]")
+    print(f"NAME: {p_data.get('First Name', '')} {p_data.get('Last Name', '')}")
+    print(f"TITLE: {p_data.get('Title', 'N/A')}")
+    print(f"EMAIL: {p_data.get('Email', 'N/A')}")
+    
+    p_num = p_data.get('phone_number', 'N/A')
+    m_num = p_data.get('mobile_phoneNumber', 'N/A')
+    print(f"PHONE: {p_num}")
+    print(f"MOBILE: {m_num}")
+    
+    loc = p_data.get('Full Address', 'N/A').replace('\n', ', ')
+    print(f"LOCATION: {loc}")
+    print(f"SPECIALTIES: {p_data.get('Specialties', 'N/A')}")
+    if p_data.get('Experience'):
+        print(f"EXPERIENCE: {p_data['Experience'][:200].strip()}...")
+    print(f"----------------------------------------\n")
+
+def print_property_summary(p_data):
+    """Prints a clean summary of extracted property data."""
+    print(f"\n✅ [PROPERTY FOUND]")
+    print(f"PROPERTY NAME: {p_data.get('Property Name', 'N/A')}")
+    print(f"ADDRESS: {p_data.get('Address', 'N/A')}")
+    print(f"SQ FT: {p_data.get('SqFt', 'N/A')}")
+    print(f"BROCHURE URL: {p_data.get('Brochure URL', 'Not Found')}")
+    brokers = p_data.get('Brokers', [])
+    if brokers:
+        print(f"CONNECTED AGENTS:")
+        for b in brokers:
+            off = b.get('phone_number')
+            mob = b.get('mobile_phoneNumber')
+            e_list = b.get('Emails', [])
+            contact_str = f"     - {b.get('Name')}"
+            if off: contact_str += f" | 📞 Office: {off}"
+            if mob: contact_str += f" | 📱 Mobile: {mob}"
+            if e_list: contact_str += f" | ✉️ {', '.join(e_list)}"
+            print(contact_str)
+    else:
+        print(f"CONNECTED AGENTS: None found")
+    
+    if p_data.get('Description'):
+        print(f"DESCRIPTION: {p_data['Description'][:300].strip()}...")
+    print(f"----------------------------------------\n")
+
 def main():
     parser = argparse.ArgumentParser(description="Run CBRE Scraper Pipeline")
     parser.add_argument("--url", required=True, help="Target URL to scrape (directory or profile)")
-    parser.add_argument("--show-browser", action="store_true", help="Run with visible browser")
+    parser.add_argument("--hide-browser", action="store_true", help="Run in headless mode (not recommended for CBRE)")
     parser.add_argument("--mode", choices=['auto', 'person', 'property'], default='auto', help="Force specific scraper mode")
     parser.add_argument("--dry-run", action="store_true", help="Test mode: Do not save to Vector DB")
     parser.add_argument("--limit", type=int, default=None, help="Max items to process (for testing)")
@@ -19,11 +64,11 @@ def main():
     
     print(f"Pipeline started for URL: {args.url}")
     print(f"Mode: {args.mode}")
-    print(f"Headless: {not args.show_browser}")
+    print(f"Headless: {args.hide_browser}")
     print(f"Dry Run: {args.dry_run}")
     
-    # Initialize Crawler
-    crawler = GenericCrawler(headless=not args.show_browser, disable_vectors=args.dry_run)
+    # Initialize Crawler (Default to headed)
+    crawler = GenericCrawler(headless=args.hide_browser, disable_vectors=args.dry_run)
     
     # Initialize Vector DB if keys exist and NOT dry run
     vdb = None
@@ -49,6 +94,8 @@ def main():
             # Auto-detection
             if "/people/" in args.url and not args.url.endswith("/people"):
                 is_person = True
+            elif "/details/" in args.url: # Explicit details page
+                is_property = True
             elif "/properties/" in args.url or "/listings/" in args.url:
                 is_property = True
             else:
@@ -56,10 +103,13 @@ def main():
 
         if is_person:
             # Check if it's a directory/search URL despite being in 'person' mode
+            # If it's a details page, it's never a directory
             is_directory_url = (
-                "#" in args.url or 
-                "?" in args.url or 
-                args.url.rstrip('/').endswith("/people")
+                "/details/" not in args.url and (
+                    "#" in args.url or 
+                    "?" in args.url or 
+                    args.url.rstrip('/').endswith("/people")
+                )
             )
             
             if is_directory_url:
@@ -93,16 +143,7 @@ def main():
                         all_data.append(p_data)
                         
                         # Detailed Key-Value Summary for UI
-                        print(f"\n👤 [PERSON FOUND]")
-                        print(f"NAME: {p_data.get('First Name')} {p_data.get('Last Name')}")
-                        print(f"TITLE: {p_data.get('Title', 'N/A')}")
-                        print(f"EMAIL: {p_data.get('Email', 'N/A')}")
-                        print(f"PHONE: {p_data.get('Phone', 'N/A')}")
-                        loc = p_data.get('Full Address', 'N/A').replace('\n', ', ')
-                        print(f"LOCATION: {loc}")
-                        if p_data.get('Experience'):
-                            print(f"EXPERIENCE: {p_data['Experience'][:200].strip()}...")
-                        print(f"----------------------------------------\n")
+                        print_person_summary(p_data)
                         
                         time.sleep(2)
                     except Exception as e:
@@ -116,14 +157,17 @@ def main():
                 print("Running Single Person Scraper...")
                 data = crawler.scrape_details(args.url, None, None)
                 print("--- DATA EXTRACTED ---")
-                print(json.dumps(data, indent=2))
+                print_person_summary(data)
             
         elif is_property:
              # Check for Property Directory
+             # If it's a details page, it's NEVER a directory
              is_prop_directory = (
-                 "properties-for-lease" in args.url or 
-                 "properties-for-sale" in args.url or
-                 "?" in args.url
+                 "/details/" not in args.url and (
+                     "properties-for-lease" in args.url or 
+                     "properties-for-sale" in args.url or
+                     "?" in args.url
+                 )
              )
              
              if is_prop_directory:
@@ -163,24 +207,7 @@ def main():
                          all_data.append(p_data)
                          
                          # Detailed Key-Value Summary for UI
-                         print(f"\n✅ [PROPERTY FOUND]")
-                         print(f"PROPERTY NAME: {p_data.get('Property Name', 'N/A')}")
-                         print(f"ADDRESS: {p_data.get('Address', 'N/A')}")
-                         print(f"BROCHURE URL: {p_data.get('Brochure URL', 'Not Found')}")
-                         brokers = p_data.get('Brokers', [])
-                         if brokers:
-                             print(f"CONNECTED AGENTS:")
-                             for b in brokers:
-                                 contact_str = f"     - {b.get('Name')}"
-                                 if b.get('Phones'): contact_str += f" | 📞 {'/'.join(b.get('Phones'))}"
-                                 if b.get('Emails'): contact_str += f" | ✉️ {'/'.join(b.get('Emails'))}"
-                                 print(contact_str)
-                         else:
-                             print(f"CONNECTED AGENTS: None found")
-                         
-                         if p_data.get('Description'):
-                             print(f"DESCRIPTION: {p_data['Description'][:300].strip()}...")
-                         print(f"----------------------------------------\n")
+                         print_property_summary(p_data)
                          
                          time.sleep(2)
                      except Exception as e:
@@ -190,18 +217,11 @@ def main():
                  # print(json.dumps(all_data, indent=2)) # Reduced verbosity
 
              else:
-                print("\n✅ [PROPERTY FOUND]")
-                print(f"PROPERTY NAME: {data.get('Property Name', 'N/A')}")
-                print(f"ADDRESS: {data.get('Address', 'N/A')}")
-                print(f"BROCHURE URL: {data.get('Brochure URL', 'Not Found')}")
+                print(f"Running Single Property Scraper: {args.url}")
+                data = crawler.scrape_property(args.url)
                 
-                brokers = data.get('Brokers', [])
-                broker_names = [b.get('Name') for b in brokers if b.get('Name')]
-                print(f"CONNECTED AGENTS: {', '.join(broker_names) if broker_names else 'None found'}")
-                
-                if data.get('Description'):
-                    print(f"DESCRIPTION: {data['Description'][:200]}...")
-                print(f"----------------------------------------\n")
+                # Detailed Key-Value Summary for UI
+                print_property_summary(data)
                 
         else:
             # Likely a directory

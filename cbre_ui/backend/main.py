@@ -6,8 +6,16 @@ import subprocess
 import os
 import sys
 import json
+import logging
 from typing import Optional, List
 from dotenv import load_dotenv
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Load env from .env file
 load_dotenv()
@@ -27,6 +35,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def log_requests(request, call_next):
+    logger.info(f"Incoming request: {request.method} {request.url}")
+    try:
+        response = await call_next(request)
+        logger.info(f"Response status: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"Request failed: {request.method} {request.url} - Error: {e}")
+        raise e
+
 # Global state for the scraper process
 scraper_process: Optional[subprocess.Popen] = None
 active_websockets: List[WebSocket] = []
@@ -39,6 +58,7 @@ class ScrapeRequest(BaseModel):
     openai_api_key: Optional[str] = None
     headless: bool = False
     dry_run: bool = False
+    mode: str = "auto"
     limit: Optional[int] = None
 
 @app.get("/")
@@ -86,8 +106,8 @@ async def run_scraper_subprocess(req: ScrapeRequest):
     if hasattr(req, 'mode') and req.mode:
         cmd.extend(["--mode", req.mode])
         
-    if not req.headless:
-        cmd.append("--show-browser")
+    if req.headless:
+        cmd.append("--hide-browser")
         
     if req.dry_run:
         cmd.append("--dry-run")
@@ -149,7 +169,7 @@ async def scrape_property(req: PropertyScrapeRequest, background_tasks: Backgrou
 # Internal helper to reuse logic
 async def start_scrape_internal(req, background_tasks: BackgroundTasks):
     global scraper_process
-    if scraper_process and scraper_process.poll() is None:
+    if scraper_process and scraper_process.returncode is None:
         return {"status": "error", "message": "Scraper is already running"}
 
     background_tasks.add_task(run_scraper_subprocess, req)
@@ -164,11 +184,11 @@ async def start_scrape_generic(req: ScrapeRequest, background_tasks: BackgroundT
 @app.post("/api/stop-scrape")
 async def stop_scrape():
     global scraper_process
-    if scraper_process and scraper_process.poll() is None:
+    if scraper_process and scraper_process.returncode is None:
         scraper_process.terminate()
         try:
-            scraper_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+            await asyncio.wait_for(scraper_process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
             scraper_process.kill()
         scraper_process = None
         await broadcast_log("Scraper stopped by user.")
@@ -198,17 +218,31 @@ class QueryRequest(BaseModel):
 @app.post("/api/query-voice")
 async def query_voice_generic(req: QueryRequest):
     """Generic query endpoint (searches all types)"""
-    if not vector_db: return {"text": "Database not initialized."}
-    return {"text": vector_db.search(req.query, top_k=req.top_k)}
+    logger.info(f"Voice Query received: {req.query}")
+    if not vector_db: 
+        logger.error("Voice Query failed: Database not initialized.")
+        return {"text": "Database not initialized. Please check API keys.", "variables": {}}
+    
+    try:
+        res = vector_db.search(req.query, top_k=req.top_k)
+        logger.info(f"Voice Query successful. Matches found: {len(res.get('text', '')) > 0}")
+        # Merge variables into top level if requested, or keep separate. 
+        # Retell often wants flat response for dynamic variables.
+        return {**res, **res.get("variables", {})}
+    except Exception as e:
+        logger.error(f"Voice Query error: {e}")
+        return {"text": f"Error during search: {str(e)}", "variables": {}}
 
 @app.post("/api/query/people")
 async def query_people(req: QueryRequest):
     """Query specific to People"""
-    if not vector_db: return {"text": "Database not initialized."}
-    return {"text": vector_db.search(req.query, top_k=req.top_k, filter_type='person')}
+    if not vector_db: return {"text": "Database not initialized.", "variables": {}}
+    res = vector_db.search(req.query, top_k=req.top_k, filter_type='person')
+    return {**res, **res.get("variables", {})}
 
 @app.post("/api/query/properties")
 async def query_properties(req: QueryRequest):
     """Query specific to Properties"""
-    if not vector_db: return {"text": "Database not initialized."}
-    return {"text": vector_db.search(req.query, top_k=req.top_k, filter_type='property')}
+    if not vector_db: return {"text": "Database not initialized.", "variables": {}}
+    res = vector_db.search(req.query, top_k=req.top_k, filter_type='property')
+    return {**res, **res.get("variables", {})}
