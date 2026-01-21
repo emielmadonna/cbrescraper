@@ -314,7 +314,12 @@ class VectorDB:
                     )
                     # For Retell AI (Map listing agent phone)
                     if not top_variables:
-                        top_variables = {"target_phone": broker_phone}
+                        top_variables = {
+                            "target_phone": broker_phone,
+                            "brochure_url": brochure,
+                            "property_address": addr,
+                            "primary_broker": broker
+                        }
                     response_parts.append(part)
             
             if not response_parts:
