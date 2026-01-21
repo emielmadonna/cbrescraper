@@ -649,6 +649,9 @@ class GenericCrawler:
                 else:
                     data['Brochure URL'] = "Not Found"
 
+            except Exception as e:
+                print(f"    Error extracting brochure: {e}")
+
             # --- Highlights / Description ---
             try:
                 description_parts = []
