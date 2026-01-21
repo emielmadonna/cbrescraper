@@ -652,55 +652,62 @@ class GenericCrawler:
             except Exception as e:
                 print(f"    Error extracting brochure: {e}")
 
-            # --- Highlights / Description ---
+            # --- Highlights / Overview / Description ---
             try:
                 description_parts = []
                 
-                # 1. Try to find "Highlights" header and get following content
-                # The screenshot shows "Highlights" as a heading.
-                # using XPath to find the h2/h3/div with text "Highlights"
-                highlights_header = self.page.query_selector('xpath=//*[translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")="highlights"]')
-                
-                if highlights_header:
-                    print("    Found 'Highlights' section.")
-                    # Get the next sibling or parent's next sibling that might contain the list
-                    # Often the structure is H2 + DIV/UL. 
-                    # We can also just grab the text of the container if it's wrapped.
-                    
-                    # Heuristic: Get the parent, and if the parent isn't too big, text content of parent.
-                    # Or look for lists nearby.
-                    
-                    # Let's try to get the Next Sibling element
-                    next_el = highlights_header.evaluate_handle('el => el.nextElementSibling')
-                    if next_el:
-                        text = next_el.inner_text()
-                        if text:
-                            description_parts.append(f"Highlights: {text}")
+                # Helper to find section by text and collect siblings
+                def get_section_text(headers_to_match):
+                    found_text = []
+                    # Find all headers (h1-h6, div, p)
+                    elements = self.page.query_selector_all('h1, h2, h3, h4, div, p')
+                    for i, el in enumerate(elements):
+                        try:
+                            txt = el.inner_text().strip().lower()
+                            if any(m in txt for m in headers_to_match):
+                                # Found a header. Get next few siblings of the PARENT to capture the content
+                                parent = el.evaluate_handle('el => el.parentElement')
+                                if parent:
+                                    # Get all text from the parent, but skip the header text itself to avoid duplication
+                                    full_txt = parent.inner_text()
+                                    header_txt = el.inner_text()
+                                    content = full_txt.replace(header_txt, "").strip()
+                                    if content:
+                                        found_text.append(f"{txt.capitalize()}:\n{content}")
+                        except:
+                            continue
+                    return found_text
 
-                # 2. Try standard class names for Overview/Description
+                # 1. Try to find "Highlights" and "Overview"
+                description_parts.extend(get_section_text(['highlights', 'overview']))
+
+                # 2. Try standard class names for Overview/Description as fallback
                 desc_el = self.page.query_selector('.cbre-c-pd-overview__description') or \
                           self.page.query_selector('.cbre-c-text-media__description') or \
-                          self.page.query_selector('div[class*="description"]')
+                          self.page.query_selector('div[class*="description"]') or \
+                          self.page.query_selector('.cbre-c-pd-description')
                 
                 if desc_el:
                      description_parts.append(desc_el.inner_text().strip())
 
-                # 3. Fallback: If nothing found, try to grab the first substantial paragraph
-                if not description_parts:
-                    p_text = self.page.evaluate('''() => {
-                        const ps = Array.from(document.querySelectorAll('p'));
-                        // Return the first paragraph with > 50 chars as a fallback
-                        const goodP = ps.find(p => p.innerText.length > 50);
-                        return goodP ? goodP.innerText : "";
-                    }''')
-                    if p_text:
-                        description_parts.append(p_text)
-
-                data['Description'] = "\n\n".join(list(set(description_parts))) # Dedup and join
+                # Final Join
+                data['Description'] = "\n\n".join(list(dict.fromkeys(description_parts))) # Dedup preserving order
                 print(f"    Extracted Description Length: {len(data['Description'])}")
                 
             except Exception as e:
                 print(f"    Error extracting description: {e}")
+
+            # --- Address Fix ---
+            if not data['Address']:
+                try:
+                    # Try to find address in another location
+                    addr_alt = self.page.query_selector('.cbre-c-pd-hero__address') or \
+                               self.page.query_selector('.address') or \
+                               self.page.query_selector('[itemprop="address"]')
+                    if addr_alt:
+                        data['Address'] = addr_alt.inner_text().strip()
+                except:
+                    pass
 
         except Exception as e:
             print(f"Error scraping property {property_url}: {e}")

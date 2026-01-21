@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 
 export default function Home() {
-  const [url, setUrl] = useState("https://www.cbre.com/people/joe-riley");
+  const [url, setUrl] = useState("");
   const [isScraping, setIsScraping] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [headless, setHeadless] = useState(false);
