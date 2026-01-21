@@ -49,6 +49,7 @@ async def root():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_websockets.append(websocket)
+    await websocket.send_text("📡 System: Log stream connected. Ready for next scrape.")
     try:
         while True:
             # Keep connection alive
@@ -98,25 +99,31 @@ async def run_scraper_subprocess(req: ScrapeRequest):
     await broadcast_log(f"Starting scraper for URL: {req.url} (Mode: {getattr(req, 'mode', 'auto')}, Test: {req.dry_run})")
     
     try:
-        scraper_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-            text=True,
-            bufsize=1  # Line buffered
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env
         )
+        scraper_process = process # Allow stopping it
 
         # Stream output
         while True:
-            line = scraper_process.stdout.readline()
-            if not line and scraper_process.poll() is not None:
+            line = await process.stdout.readline()
+            if not line:
                 break
-            if line:
-                await broadcast_log(line.strip())
-                print(f"Scraper: {line.strip()}")
+            
+            decoded_line = line.decode().strip()
+            if decoded_line:
+                # Capture and broadcast
+                await broadcast_log(decoded_line)
+                print(f"Scraper: {decoded_line}")
+                
+                # Special Formatting for final property data
+                if "--- DATA EXTRACTED ---" in decoded_line or "Extracted:" in decoded_line:
+                    await broadcast_log("📊 [DATA SUMMARY] --------------------")
         
-        rc = scraper_process.poll()
+        rc = await process.wait()
         await broadcast_log(f"Scraper finished with exit code {rc}")
         
     except Exception as e:

@@ -137,7 +137,18 @@ def main():
                      try:
                          p_data = crawler.scrape_property(prop_url)
                          all_data.append(p_data)
-                         print(f"   > Extracted: {p_data.get('Property Name')}")
+                         
+                         # Structured Readout for UI
+                         print(f"\n📊 PROPERTY SUMMARY:")
+                         print(f"   Name: {p_data.get('Property Name')}")
+                         print(f"   Address: {p_data.get('Address')}")
+                         print(f"   Brochure: {p_data.get('Brochure URL')}")
+                         print(f"   Agent Count: {len(p_data.get('Brokers', []))}")
+                         if p_data.get('Description'):
+                             desc_snip = p_data['Description'].replace('\n', ' ')[:100]
+                             print(f"   Description: {desc_snip}...")
+                         print(f"------------------------\n")
+                         
                          time.sleep(2)
                      except Exception as e:
                          print(f"   > Error scraping property: {e}")
@@ -149,7 +160,11 @@ def main():
                 print("Running Single Property Scraper...")
                 data = crawler.scrape_property(args.url)
                 print("--- DATA EXTRACTED ---")
-                print(json.dumps(data, indent=2))
+                print(f"   Name: {data.get('Property Name')}")
+                print(f"   Address: {data.get('Address')}")
+                print(f"   Brochure: {data.get('Brochure URL')}")
+                print(f"   Agents: {len(data.get('Brokers', []))}")
+                # print(json.dumps(data, indent=2))
                 
         else:
             # Likely a directory
