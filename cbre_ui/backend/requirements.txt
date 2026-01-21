@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-dotenv
+pydantic
+websockets
+playwright
+pinecone
+openai
+pandas
+python-multipart

@@ -1,0 +1,8 @@
+{
+    "rewrites": [
+        {
+            "source": "/api/(.*)",
+            "destination": "/cbre_ui/backend/main.py"
+        }
+    ]
+}
