@@ -21,20 +21,34 @@ export default function Home() {
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // WebSocket for logs
     const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `ws://${host}:8000/ws/logs`;
-    const ws = new WebSocket(wsUrl);
-    ws.onmessage = (event) => {
-      const message = event.data;
-      setLogs((prev) => [...prev, message]);
+    console.log("Connecting to WebSocket:", wsUrl);
 
-      // Auto-detect finish
-      if (message.includes("Scraper finished") || message.includes("Error running scraper")) {
-        setIsScraping(false);
-      }
+    let ws = new WebSocket(wsUrl);
+
+    const setupWs = (socket: WebSocket) => {
+      socket.onopen = () => console.log("✅ WebSocket Connected");
+      socket.onerror = (err) => console.error("❌ WebSocket Error:", err);
+      socket.onclose = () => console.warn("⚠️ WebSocket Closed");
+
+      socket.onmessage = (event) => {
+        const message = event.data;
+        console.log("📩 Log received:", message);
+        setLogs((prev) => [...prev, message]);
+
+        if (message.includes("Scraper finished") || message.includes("Error running scraper")) {
+          setIsScraping(false);
+        }
+      };
     };
-    return () => ws.close();
+
+    setupWs(ws);
+
+    return () => {
+      console.log("Cleaning up WebSocket...");
+      ws.close();
+    };
   }, []);
 
   useEffect(() => {

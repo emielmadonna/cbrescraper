@@ -85,7 +85,16 @@ def main():
                     try:
                         p_data = crawler.scrape_details(profile_url, None, None)
                         all_data.append(p_data)
-                        print(f"   > Extracted: {p_data.get('First Name')} {p_data.get('Last Name')}")
+                        
+                        # Detailed Key-Value Summary for UI
+                        print(f"\n👤 [PERSON FOUND]")
+                        print(f"NAME: {p_data.get('First Name')} {p_data.get('Last Name')}")
+                        print(f"TITLE: {p_data.get('Title', 'N/A')}")
+                        print(f"EMAIL: {p_data.get('Email', 'N/A')}")
+                        print(f"PHONE: {p_data.get('Phone', 'N/A')}")
+                        print(f"LOCATION: {p_data.get('Location', 'N/A')}")
+                        print(f"----------------------------------------\n")
+                        
                         time.sleep(2)
                     except Exception as e:
                         print(f"   > Error scraping profile: {e}")
@@ -138,16 +147,19 @@ def main():
                          p_data = crawler.scrape_property(prop_url)
                          all_data.append(p_data)
                          
-                         # Structured Readout for UI
-                         print(f"\n📊 PROPERTY SUMMARY:")
-                         print(f"   Name: {p_data.get('Property Name')}")
-                         print(f"   Address: {p_data.get('Address')}")
-                         print(f"   Brochure: {p_data.get('Brochure URL')}")
-                         print(f"   Agent Count: {len(p_data.get('Brokers', []))}")
+                         # Detailed Key-Value Summary for UI
+                         print(f"\n✅ [PROPERTY FOUND]")
+                         print(f"PROPERTY NAME: {p_data.get('Property Name', 'N/A')}")
+                         print(f"ADDRESS: {p_data.get('Address', 'N/A')}")
+                         print(f"BROCHURE URL: {p_data.get('Brochure URL', 'Not Found')}")
+                         
+                         brokers = p_data.get('Brokers', [])
+                         broker_names = [b.get('Name') for b in brokers if b.get('Name')]
+                         print(f"CONNECTED AGENTS: {', '.join(broker_names) if broker_names else 'None found'}")
+                         
                          if p_data.get('Description'):
-                             desc_snip = p_data['Description'].replace('\n', ' ')[:100]
-                             print(f"   Description: {desc_snip}...")
-                         print(f"------------------------\n")
+                             print(f"DESCRIPTION: {p_data['Description'][:200]}...")
+                         print(f"----------------------------------------\n")
                          
                          time.sleep(2)
                      except Exception as e:
