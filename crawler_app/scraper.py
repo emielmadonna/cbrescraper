@@ -652,62 +652,75 @@ class GenericCrawler:
             except Exception as e:
                 print(f"    Error extracting brochure: {e}")
 
-            # --- Highlights / Overview / Description ---
+            # --- Highlights / Overview / Description (Robust JS) ---
             try:
-                description_parts = []
+                js_extract = """
+                () => {
+                    const data = { description: "", address: "" };
+                    
+                    // 1. Better Highlights/Overview Search
+                    const findSection = (targets) => {
+                        const all = Array.from(document.querySelectorAll('h1, h2, h3, h4, div.cbre-c-pd-overview__title, p'));
+                        const header = all.find(el => {
+                            const t = el.innerText.trim().toLowerCase();
+                            return targets.some(m => t === m);
+                        });
+                        
+                        if (header) {
+                            let content = [];
+                            let next = header.nextElementSibling;
+                            if (!next && header.parentElement) next = header.parentElement.nextElementSibling;
+                            
+                            // Grab up to 5 siblings or until next header
+                            let count = 0;
+                            while (next && count < 5) {
+                                if (['H1', 'H2', 'H3', 'H4', 'H5'].includes(next.tagName)) break;
+                                const t = next.innerText.trim();
+                                if (t) content.push(t);
+                                next = next.nextElementSibling;
+                                count++;
+                            }
+                            return content.join('\\n\\n');
+                        }
+                        return "";
+                    };
+
+                    const h = findSection(['highlights']);
+                    const o = findSection(['overview', 'property overview']);
+                    
+                    const combined = [];
+                    if (h) combined.push("HIGHLIGHTS:\\n" + h);
+                    if (o) combined.push("OVERVIEW:\\n" + o);
+                    
+                    // Fallback to generic description classes
+                    if (combined.length === 0) {
+                        const desc = document.querySelector('.cbre-c-pd-overview__description, .cbre-c-text-media__description, .cbre-c-pd-description');
+                        if (desc) combined.push(desc.innerText.trim());
+                    }
+                    
+                    data.description = combined.join('\\n\\n');
+
+                    // 2. Better Address detection
+                    const addr = document.querySelector('.cbre-c-pd-hero__address, [itemprop="address"], address, .cbre-c-pd-hero__sub-title');
+                    if (addr) data.address = addr.innerText.trim();
+
+                    return data;
+                }
+                """
+                extracted = self.page.evaluate(js_extract)
                 
-                # Helper to find section by text and collect siblings
-                def get_section_text(headers_to_match):
-                    found_text = []
-                    # Find all headers (h1-h6, div, p)
-                    elements = self.page.query_selector_all('h1, h2, h3, h4, div, p')
-                    for i, el in enumerate(elements):
-                        try:
-                            txt = el.inner_text().strip().lower()
-                            if any(m in txt for m in headers_to_match):
-                                # Found a header. Get next few siblings of the PARENT to capture the content
-                                parent = el.evaluate_handle('el => el.parentElement')
-                                if parent:
-                                    # Get all text from the parent, but skip the header text itself to avoid duplication
-                                    full_txt = parent.inner_text()
-                                    header_txt = el.inner_text()
-                                    content = full_txt.replace(header_txt, "").strip()
-                                    if content:
-                                        found_text.append(f"{txt.capitalize()}:\n{content}")
-                        except:
-                            continue
-                    return found_text
-
-                # 1. Try to find "Highlights" and "Overview"
-                description_parts.extend(get_section_text(['highlights', 'overview']))
-
-                # 2. Try standard class names for Overview/Description as fallback
-                desc_el = self.page.query_selector('.cbre-c-pd-overview__description') or \
-                          self.page.query_selector('.cbre-c-text-media__description') or \
-                          self.page.query_selector('div[class*="description"]') or \
-                          self.page.query_selector('.cbre-c-pd-description')
+                if extracted.get('description'):
+                    data['Description'] = extracted['description']
                 
-                if desc_el:
-                     description_parts.append(desc_el.inner_text().strip())
-
-                # Final Join
-                data['Description'] = "\n\n".join(list(dict.fromkeys(description_parts))) # Dedup preserving order
+                if not data['Address'] and extracted.get('address'):
+                    data['Address'] = extracted['address']
+                    
                 print(f"    Extracted Description Length: {len(data['Description'])}")
-                
+                if data['Address']:
+                    print(f"    Found Address: {data['Address']}")
+                    
             except Exception as e:
-                print(f"    Error extracting description: {e}")
-
-            # --- Address Fix ---
-            if not data['Address']:
-                try:
-                    # Try to find address in another location
-                    addr_alt = self.page.query_selector('.cbre-c-pd-hero__address') or \
-                               self.page.query_selector('.address') or \
-                               self.page.query_selector('[itemprop="address"]')
-                    if addr_alt:
-                        data['Address'] = addr_alt.inner_text().strip()
-                except:
-                    pass
+                print(f"    Error in robust JS extraction: {e}")
 
         except Exception as e:
             print(f"Error scraping property {property_url}: {e}")
