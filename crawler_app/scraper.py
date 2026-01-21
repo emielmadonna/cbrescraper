@@ -640,16 +640,55 @@ class GenericCrawler:
                 else:
                     data['Brochure URL'] = "Not Found"
 
-                # Highlights (often in bullet points or specific sections)
-                # Strategy: Grab the main description text or specific ULs
-                desc_el = self.page.query_selector('.cbre-c-pd-overview__description') or self.page.query_selector('.cbre-c-text-media__description')
-                if desc_el:
-                    data['Description'] = desc_el.inner_text().strip()
-                else:
-                    data['Description'] = ""
+            # --- Highlights / Description ---
+            try:
+                description_parts = []
+                
+                # 1. Try to find "Highlights" header and get following content
+                # The screenshot shows "Highlights" as a heading.
+                # using XPath to find the h2/h3/div with text "Highlights"
+                highlights_header = self.page.query_selector('xpath=//*[translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")="highlights"]')
+                
+                if highlights_header:
+                    print("    Found 'Highlights' section.")
+                    # Get the next sibling or parent's next sibling that might contain the list
+                    # Often the structure is H2 + DIV/UL. 
+                    # We can also just grab the text of the container if it's wrapped.
                     
+                    # Heuristic: Get the parent, and if the parent isn't too big, text content of parent.
+                    # Or look for lists nearby.
+                    
+                    # Let's try to get the Next Sibling element
+                    next_el = highlights_header.evaluate_handle('el => el.nextElementSibling')
+                    if next_el:
+                        text = next_el.inner_text()
+                        if text:
+                            description_parts.append(f"Highlights: {text}")
+
+                # 2. Try standard class names for Overview/Description
+                desc_el = self.page.query_selector('.cbre-c-pd-overview__description') or \
+                          self.page.query_selector('.cbre-c-text-media__description') or \
+                          self.page.query_selector('div[class*="description"]')
+                
+                if desc_el:
+                     description_parts.append(desc_el.inner_text().strip())
+
+                # 3. Fallback: If nothing found, try to grab the first substantial paragraph
+                if not description_parts:
+                    p_text = self.page.evaluate('''() => {
+                        const ps = Array.from(document.querySelectorAll('p'));
+                        // Return the first paragraph with > 50 chars as a fallback
+                        const goodP = ps.find(p => p.innerText.length > 50);
+                        return goodP ? goodP.innerText : "";
+                    }''')
+                    if p_text:
+                        description_parts.append(p_text)
+
+                data['Description'] = "\n\n".join(list(set(description_parts))) # Dedup and join
+                print(f"    Extracted Description Length: {len(data['Description'])}")
+                
             except Exception as e:
-                print(f"    Error extracting extra data: {e}")
+                print(f"    Error extracting description: {e}")
 
         except Exception as e:
             print(f"Error scraping property {property_url}: {e}")
