@@ -9,9 +9,9 @@ export default function Home() {
   const [headless, setHeadless] = useState(false);
   const [mode, setMode] = useState<"auto" | "person" | "property">("auto");
 
-  // Test Mode State
+  // Scraper State
+  const [scrapeLimit, setScrapeLimit] = useState<number>(3);
   const [isTestMode, setIsTestMode] = useState(false);
-  const [testLimit, setTestLimit] = useState<number>(3);
 
   // Voice Agent Query Tester
   const [query, setQuery] = useState("");
@@ -73,7 +73,7 @@ export default function Home() {
           url,
           headless,
           dry_run: isTestMode,
-          limit: isTestMode ? testLimit : null
+          limit: scrapeLimit
         }),
       });
     } catch (error) {
@@ -229,20 +229,26 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Test Limit Input */}
-              {isTestMode && (
-                <div className="bg-yellow-900/20 border border-yellow-700/50 p-4 rounded-lg">
-                  <label className="block text-sm font-medium text-yellow-500 mb-1">Limit Items (Test Mode)</label>
-                  <input
-                    type="number"
-                    value={testLimit}
-                    onChange={(e) => setTestLimit(parseInt(e.target.value) || 1)}
-                    className="w-full bg-gray-900 border border-yellow-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-yellow-500 outline-none"
-                    min="1"
-                  />
-                  <p className="text-xs text-yellow-600 mt-1">Processing will stop after {testLimit} items.</p>
+              {/* Universal Scrape Limit */}
+              <div className="bg-gray-900/50 border border-gray-700 p-4 rounded-lg">
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-sm font-medium text-gray-300">Scrape Limit</label>
+                  <span className={`text-xs px-2 py-0.5 rounded ${isTestMode ? 'bg-yellow-900/40 text-yellow-500' : 'bg-green-900/40 text-green-500'}`}>
+                    {isTestMode ? "Test Mode" : "Production Mode"}
+                  </span>
                 </div>
-              )}
+                <input
+                  type="number"
+                  value={scrapeLimit}
+                  onChange={(e) => setScrapeLimit(parseInt(e.target.value) || 1)}
+                  className="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-green-500 outline-none"
+                  min="1"
+                  max="1000"
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  The scraper will process a maximum of <b>{scrapeLimit}</b> items from the directory.
+                </p>
+              </div>
 
               {/* Action Buttons */}
               <div className="pt-2 flex gap-4">

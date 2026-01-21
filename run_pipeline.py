@@ -81,7 +81,13 @@ def main():
                     profile_url = res.get('URL')
                     if not profile_url: continue
                     
-                    print(f"[{i+1}/{len(results)}] Scraping Profile: {res.get('Name')} ({profile_url})")
+                    print(f"[{i+1}/{len(results)}] Checking Profile: {res.get('Name')} ({profile_url})")
+                    
+                    # PRE-SCRAPE DUPLICATE CHECK
+                    if vdb and vdb.exists(profile_url):
+                        print(f"    - Skipping (Already in Vector DB): {profile_url}")
+                        continue
+
                     try:
                         p_data = crawler.scrape_details(profile_url, None, None)
                         all_data.append(p_data)
@@ -145,7 +151,13 @@ def main():
                      prop_url = res.get('URL')
                      if not prop_url: continue
                      
-                     print(f"[{i+1}/{len(results)}] Scraping Property: {res.get('Name')} ({prop_url})")
+                     print(f"[{i+1}/{len(results)}] Checking Property: {res.get('Name')} ({prop_url})")
+
+                     # PRE-SCRAPE DUPLICATE CHECK
+                     if vdb and vdb.exists(prop_url):
+                         print(f"    - Skipping (Already in Vector DB): {prop_url}")
+                         continue
+
                      try:
                          p_data = crawler.scrape_property(prop_url)
                          all_data.append(p_data)

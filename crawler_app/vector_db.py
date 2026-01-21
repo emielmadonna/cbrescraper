@@ -58,6 +58,16 @@ class VectorDB:
             print(f"Error generating embedding: {e}")
             return None
 
+    def exists(self, url):
+        """Checks if a URL already exists in the index."""
+        if not self.index: return False
+        try:
+            # Pinecone fetch by list of IDs
+            res = self.index.fetch(ids=[url])
+            return url in res.get('vectors', {})
+        except:
+            return False
+
     def upsert_person(self, person_data):
         if not self.index:
             return
@@ -65,6 +75,11 @@ class VectorDB:
         try:
             url = person_data.get('URL', '')
             if not url: return
+
+            # DUPLICATE CHECK
+            if self.exists(url):
+                print(f"    - Skipping (Already in Vector DB): {url}")
+                return
 
             # Create Text Blob for Search
             # "Joe Riley - Senior Vice President at CBRE. Seattle, WA. Experience: ..."
@@ -110,6 +125,11 @@ class VectorDB:
         try:
             url = prop_data.get('URL', '')
             if not url: return
+
+            # DUPLICATE CHECK
+            if self.exists(url):
+                print(f"    - Skipping (Already in Vector DB): {url}")
+                return
 
             name = prop_data.get('Property Name', 'Unknown Property')
             address = prop_data.get('Address', '')
