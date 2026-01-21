@@ -4,3 +4,4 @@ python-dotenv
 pydantic
 pinecone-client
 openai
+python-multipart

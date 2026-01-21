@@ -177,7 +177,12 @@ except ImportError:
     from crawler_app.vector_db import VectorDB
 
 # Initialize VectorDB instance for querying
-vector_db = VectorDB()
+vector_db = None
+try:
+    vector_db = VectorDB()
+except Exception as e:
+    print(f"Failed to initialize VectorDB: {e}")
+    # Do not crash the app, just leave vector_db as None (endpoints will handle it)
 
 class QueryRequest(BaseModel):
     query: str
