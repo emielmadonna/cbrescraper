@@ -22,7 +22,8 @@ export default function Home() {
 
   useEffect(() => {
     // WebSocket for logs
-    const ws = new WebSocket("ws://localhost:8000/ws/logs");
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/logs";
+    const ws = new WebSocket(wsUrl);
     ws.onmessage = (event) => {
       const message = event.data;
       setLogs((prev) => [...prev, message]);
@@ -48,7 +49,8 @@ export default function Home() {
       if (mode === "person") endpoint = "/api/scrape/person";
       if (mode === "property") endpoint = "/api/scrape/property";
 
-      await fetch(`http://localhost:8000${endpoint}`, {
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      await fetch(`${baseUrl}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -67,7 +69,8 @@ export default function Home() {
 
   const stopScrape = async () => {
     try {
-      await fetch("http://localhost:8000/api/stop-scrape", { method: "POST" });
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      await fetch(`${baseUrl}/api/stop-scrape`, { method: "POST" });
       setIsScraping(false);
     } catch (error) {
       console.error("Failed to stop scrape:", error);
@@ -117,7 +120,8 @@ export default function Home() {
     setIsQuerying(true);
     setQueryResult("");
     try {
-      const res = await fetch("http://localhost:8000/api/query-voice", {
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const res = await fetch(`${baseUrl}/api/query-voice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query }),

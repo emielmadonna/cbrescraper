@@ -2,7 +2,7 @@
     "rewrites": [
         {
             "source": "/api/(.*)",
-            "destination": "/cbre_ui/backend/main.py"
+            "destination": "/api/index.py"
         }
     ]
 }
