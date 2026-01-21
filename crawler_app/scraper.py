@@ -652,75 +652,102 @@ class GenericCrawler:
             except Exception as e:
                 print(f"    Error extracting brochure: {e}")
 
-            # --- Highlights / Overview / Description (Robust JS) ---
+            # --- Highlights / Overview / Description (Greedy Extraction) ---
             try:
-                js_extract = """
+                # Use a JS script that is less reliant on exact class names
+                js_greedy = """
                 () => {
-                    const data = { description: "", address: "" };
+                    const sections = {};
                     
-                    // 1. Better Highlights/Overview Search
-                    const findSection = (targets) => {
-                        const all = Array.from(document.querySelectorAll('h1, h2, h3, h4, div.cbre-c-pd-overview__title, p'));
-                        const header = all.find(el => {
-                            const t = el.innerText.trim().toLowerCase();
-                            return targets.some(m => t === m);
-                        });
+                    // Helper to get text from an element and its children
+                    const getCleanText = (el) => el ? el.innerText.replace(/\\s+/g, ' ').trim() : "";
+
+                    // Find all possible headers or bold labels
+                    const elements = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, div, p, span, strong'));
+                    
+                    elements.forEach(el => {
+                        const txt = el.innerText.trim().toLowerCase();
+                        let sectionKey = null;
                         
-                        if (header) {
+                        if (txt === "highlights") sectionKey = "Highlights";
+                        else if (txt === "overview" || txt === "property overview") sectionKey = "Overview";
+                        
+                        if (sectionKey) {
+                            // Look for the next siblings or parent's next siblings
                             let content = [];
-                            let next = header.nextElementSibling;
-                            if (!next && header.parentElement) next = header.parentElement.nextElementSibling;
+                            let runner = el.nextElementSibling;
+                            if (!runner && el.parentElement) runner = el.parentElement.nextElementSibling;
                             
-                            // Grab up to 5 siblings or until next header
-                            let count = 0;
-                            while (next && count < 5) {
-                                if (['H1', 'H2', 'H3', 'H4', 'H5'].includes(next.tagName)) break;
-                                const t = next.innerText.trim();
-                                if (t) content.push(t);
-                                next = next.nextElementSibling;
-                                count++;
+                            // Capture next 3 substantial blocks
+                            let blocksFound = 0;
+                            while (runner && blocksFound < 3) {
+                                const chunk = getCleanText(runner);
+                                if (chunk && chunk.length > 10) {
+                                    content.push(chunk);
+                                    blocksFound++;
+                                }
+                                runner = runner.nextElementSibling;
                             }
-                            return content.join('\\n\\n');
+                            sections[sectionKey] = content.join('\\n\\n');
                         }
-                        return "";
-                    };
+                    });
 
-                    const h = findSection(['highlights']);
-                    const o = findSection(['overview', 'property overview']);
-                    
-                    const combined = [];
-                    if (h) combined.push("HIGHLIGHTS:\\n" + h);
-                    if (o) combined.push("OVERVIEW:\\n" + o);
-                    
-                    // Fallback to generic description classes
-                    if (combined.length === 0) {
-                        const desc = document.querySelector('.cbre-c-pd-overview__description, .cbre-c-text-media__description, .cbre-c-pd-description');
-                        if (desc) combined.push(desc.innerText.trim());
+                    // Search for Address in Hero or top titles
+                    let address = "";
+                    const addrSources = [
+                        '.cbre-c-pd-hero__address',
+                        '.cbre-c-pd-hero__sub-title',
+                        'address',
+                        '.cbre-c-pd-description__address'
+                    ];
+                    for (const s of addrSources) {
+                        const el = document.querySelector(s);
+                        if (el && el.innerText.trim()) {
+                            address = el.innerText.trim();
+                            break;
+                        }
                     }
-                    
-                    data.description = combined.join('\\n\\n');
 
-                    // 2. Better Address detection
-                    const addr = document.querySelector('.cbre-c-pd-hero__address, [itemprop="address"], address, .cbre-c-pd-hero__sub-title');
-                    if (addr) data.address = addr.innerText.trim();
+                    // Deep Fallback: Look for text that looks like an address (e.g., "Seattle, WA")
+                    if (!address) {
+                        const allP = Array.from(document.querySelectorAll('p, div, span'));
+                        const addrMatch = allP.find(p => p.innerText.match(/[A-Za-z ]+, [A-Z]{2}\\s+\\d{5}/));
+                        if (addrMatch) address = addrMatch.innerText.trim();
+                    }
 
-                    return data;
+                    // Description Fallback: Just grab the biggest text block in the center
+                    let fallbackDesc = "";
+                    const descArea = document.querySelector('.cbre-c-pd-overview, .cbre-c-pd-description, main');
+                    if (descArea) fallbackDesc = descArea.innerText.slice(0, 2000);
+
+                    return { 
+                        highlights: sections['Highlights'] || "", 
+                        overview: sections['Overview'] || "",
+                        fallback: fallbackDesc,
+                        address: address
+                    };
                 }
                 """
-                extracted = self.page.evaluate(js_extract)
+                res = self.page.evaluate(js_greedy)
                 
-                if extracted.get('description'):
-                    data['Description'] = extracted['description']
+                parts = []
+                if res['highlights']: parts.append(f"HIGHLIGHTS:\\n{res['highlights']}")
+                if res['overview']: parts.append(f"OVERVIEW:\\n{res['overview']}")
                 
-                if not data['Address'] and extracted.get('address'):
-                    data['Address'] = extracted['address']
+                # If both empty, use fallback
+                if not parts and res['fallback']:
+                    parts.append(res['fallback'])
+                    
+                data['Description'] = "\\n\\n".join(parts)
+                if res['address']:
+                    data['Address'] = res['address']
                     
                 print(f"    Extracted Description Length: {len(data['Description'])}")
                 if data['Address']:
                     print(f"    Found Address: {data['Address']}")
-                    
+
             except Exception as e:
-                print(f"    Error in robust JS extraction: {e}")
+                print(f"    Error in greedy extraction: {e}")
 
         except Exception as e:
             print(f"Error scraping property {property_url}: {e}")
