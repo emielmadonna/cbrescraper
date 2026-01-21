@@ -561,21 +561,74 @@ class GenericCrawler:
             # --- 1. Basic Info (Name & Initial Address) ---
             title_el = self.page.query_selector('h1')
             if title_el:
-                data['Property Name'] = title_el.inner_text().strip()
+                title_text = title_el.inner_text().strip()
+                # If title is multiline, split name and address
+                t_parts = [p.strip() for p in title_text.split('\n') if p.strip()]
+                data['Property Name'] = t_parts[0]
+                if len(t_parts) > 1:
+                    data['Address'] = ", ".join(t_parts[1:])
 
-            # --- 2. Contact For Details Modal ---
+            # --- 2. Initial Data Scan (Static Contacts & Brochure) ---
+            # Some pages have contacts visible without a modal
+            static_brokers = self.page.query_selector_all('div[class*="contact"], div[class*="agent"], section[class*="contact"]')
+            for s_el in static_brokers:
+                txt = s_el.inner_text().lower()
+                if any(k in txt for k in ["contact", "agent", "broker"]):
+                    # If we find a block with a phone or email pattern, extract it
+                    import re
+                    phones = list(set(re.findall(r'(\d{3}[-\.\s]??\d{3}[-\.\s]??\d{4})', s_el.inner_text())))
+                    emails = list(set(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', s_el.inner_text())))
+                    if phones or emails:
+                        name_el = s_el.query_selector('strong, h3, h4, [class*="name"]')
+                        name = name_el.inner_text().strip() if name_el else "Contact"
+                        data['Brokers'].append({'Name': name, 'Phones': phones, 'Emails': emails})
+                        print(f"    - Static Agent Found: {name}")
+
+            # Improved Brochure Detection
             try:
-                btn_selector = '.cbre-c-pd-brokerCard__button'
-                self.page.wait_for_selector(btn_selector, timeout=2000)
-                contact_btn = self.page.query_selector(btn_selector)
-                
-                if contact_btn:
-                    print("    Clicking 'Contact For Details' button...")
-                    self.page.evaluate('el => el.click()', contact_btn)
+                # Look for links or buttons containing "Brochure"
+                search_js = """
+                () => {
+                    const els = Array.from(document.querySelectorAll('a, button, div.cbre-c-pd-hero__button'));
+                    const b = els.find(el => el.innerText.includes('Brochure'));
+                    if (!b) return null;
+                    if (b.tagName === 'A') return b.href;
+                    // If it's a button/div, try to find a link inside it or its parent
+                    const parentLink = b.closest('a');
+                    if (parentLink) return parentLink.href;
+                    const childLink = b.querySelector('a');
+                    if (childLink) return childLink.href;
+                    return null;
+                }
+                """
+                b_url = self.page.evaluate(search_js)
+                if b_url:
+                    if b_url.startswith('/'): b_url = f"https://www.cbre.com{b_url}"
+                    data['Brochure URL'] = b_url
+                    print(f"    Found Brochure (Advanced): {data['Brochure URL']}")
+            except: pass
+
+            # --- 3. Contact For Details Modal (Optional Fallback) ---
+            if not data['Brokers']:
+                try:
+                    btn_selector = '.cbre-c-pd-brokerCard__button'
+                    # Multiple buttons might exist: iterate and click the first one that works
+                    btns = self.page.query_selector_all(btn_selector)
+                    for i, btn in enumerate(btns):
+                        try:
+                            if btn.is_visible():
+                                print(f"    Clicking 'Contact For Details' button {i+1}...")
+                                self.page.evaluate('el => el.click()', btn)
+                                break
+                        except: continue
                     
                     modal_selector = '.cbre-c-pl-contact-form'
-                    self.page.wait_for_selector(modal_selector, timeout=5000)
-                    print("    Modal appeared.")
+                    try:
+                        self.page.wait_for_selector(modal_selector, timeout=4000)
+                        print("    Modal appeared.")
+                    except:
+                        # Sometimes it's a different selector or just text on page
+                        print("    Contact modal didn't appear in time.")
                     
                     # Try primary selector first, fallback to any cards
                     brokers_els = self.page.query_selector_all('.cbre-c-pl-contact-form__broker-content') or \
@@ -610,10 +663,10 @@ class GenericCrawler:
                                 data['Brokers'].append({'Name': 'Alternative Contact', 'Phones': phones, 'Emails': emails})
                                 print(f"    - Greedy Contacts: {len(phones)} phones, {len(emails)} emails")
                         except: pass
-                else:
-                    print("    'Contact For Details' button not found.")
-            except Exception as e:
-                print(f"    Modal handling skipped/failed: {e}")
+                    if not btns:
+                        print("    'Contact For Details' button not found.")
+                except Exception as e:
+                    print(f"    Modal handling skipped/failed: {e}")
 
             # --- 3. Brochure ---
             try:
@@ -679,9 +732,24 @@ class GenericCrawler:
                 data['Description'] = "\\n\\n".join(parts)
                 
                 # Set Address
-                if res.get('address'): data['Address'] = res['address']
+                if res.get('address'):
+                    # Merge if we already have some from H1
+                    if data['Address'] and res['address'] not in data['Address']:
+                        # If H1 had "10900 NE 8th" and JS got "Bellevue, WA", join them
+                        if len(data['Address']) < len(res['address']):
+                            data['Address'] = f"{data['Address']}, {res['address']}"
+                        else:
+                            pass # Keep the one from H1 if it's more detailed
+                    else:
+                        data['Address'] = res['address']
+
+                # Final de-duplicate Name from Address
                 if data['Address'] and data['Property Name']:
-                    data['Address'] = data['Address'].replace(data['Property Name'], '').strip().lstrip(',').strip()
+                    # Only remove the EXACT name if it's a prefix
+                    name = data['Property Name'].lower()
+                    addr_low = data['Address'].lower()
+                    if addr_low.startswith(name):
+                        data['Address'] = data['Address'][len(name):].strip().lstrip(',').strip()
                 
                 print(f"    > Extracted Address: {data['Address']}")
                 print(f"    > Extracted Description: {len(data['Description'])} chars")
