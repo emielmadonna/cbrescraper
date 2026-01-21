@@ -113,21 +113,30 @@ class VectorDB:
             name = prop_data.get('Property Name', 'Unknown Property')
             address = prop_data.get('Address', '')
             
-            # Create Text Blob
+            # Create Search Text Blob
             description = prop_data.get('Description', '')
-            text_blob = f"Property: {name}. Located at: {address}. {description}"
+            text_blob = f"PROPERTY: {name}\nADDRESS: {address}\nDESCRIPTION: {description}"
             
-            # Add broker names to text for searchability
+            # Map Brokers for metadata and search
             brokers = prop_data.get('Brokers', [])
+            broker_meta = []
             if brokers:
-                broker_names = [b.get('Name') for b in brokers]
-                text_blob += f" Brokers: {', '.join(broker_names)}."
+                broker_names = []
+                for b in brokers:
+                    b_name = b.get('Name', 'Unknown')
+                    broker_names.append(b_name)
+                    broker_meta.append({
+                        'name': b_name,
+                        'phones': b.get('Phones', []),
+                        'emails': b.get('Emails', [])
+                    })
+                text_blob += f"\nAGENTS: {', '.join(broker_names)}"
 
             # Generate Embedding
             vector = self.get_embedding(text_blob)
             if not vector: return
 
-            # Metadata
+            # Metadata (Strictly structured for clean querying)
             metadata = {
                 'type': 'property',
                 'url': url,
@@ -135,12 +144,13 @@ class VectorDB:
                 'address': address,
                 'text': text_blob,
                 'broker_count': len(brokers),
-                'brochure_url': prop_data.get('Brochure URL', ''),
+                'brokers_json': json.dumps(broker_meta), # Store complex list as JSON string
+                'brochure_url': prop_data.get('Brochure URL', 'Not Found'),
                 'description': description
             }
             
             self.index.upsert(vectors=[(url, vector, metadata)])
-            print(f"Successfully upserted property: {name}")
+            print(f"Successfully upserted property to Pinecone: {name}")
             
         except Exception as e:
             print(f"Error upserting property: {e}")
