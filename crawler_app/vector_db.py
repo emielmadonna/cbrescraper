@@ -202,55 +202,74 @@ class VectorDB:
             return {"text": "Vector database is not configured.", "variables": {}}
             
         try:
-            # Select Namespace
-            namespace = None
-            if filter_type == 'person': namespace = "seattle_directory"
-            elif filter_type == 'property': namespace = "seattle_listings"
-            else: namespace = "seattle_directory" # Default to people if unspeced for now
+            # Determine Namespaces to Query
+            namespaces_to_query = []
+            if filter_type == 'person': 
+                namespaces_to_query = ["seattle_directory"]
+            elif filter_type == 'property': 
+                namespaces_to_query = ["seattle_listings"]
+            else: 
+                # Generic Search: Query both!
+                namespaces_to_query = ["seattle_directory", "seattle_listings"]
             
-            # For Integrated Inference v6/v7, we use search_records with SearchQuery
-            query_obj = SearchQuery(
-                inputs={"text": query_text},
-                top_k=top_k,
-                filter={'type': filter_type} if filter_type else None
-            )
-            logger.info(f"DEBUG: Searching namespace '{namespace}' with query: {query_obj}")
-            
-            results = self.index.search_records(
-                namespace=namespace,
-                query=query_obj
-            )
-            
-            # DEBUG RAW RESPONSE
-            logger.info(f"DEBUG: Raw Search Results: {results}")
+            all_matches = []
 
-            matches = []
-            
-            # Helper to extract hits from various response formats
-            hits = []
-            if hasattr(results, 'result'): # v7 object style
-                hits = getattr(results.result, 'hits', [])
-            elif isinstance(results, dict):
-                # Check for nested 'result' key which contains 'hits'
-                if 'result' in results and 'hits' in results['result']:
-                    hits = results['result']['hits']
-                elif 'hits' in results:
-                    hits = results['hits']
-            
-            # If hits is still empty/None, check if results object itself has hits (v6 style)
-            if not hits and hasattr(results, 'hits'):
-                 hits = results.hits
+            for ns in namespaces_to_query:
+                # logger.info(f"DEBUG: Querying namespace: {ns}")
+                try:
+                    # Construct query object for this namespace
+                    # Use 'None' for filter if generic search, or specific type if we had one (though implied by namespace)
+                    current_filter = {'type': filter_type} if filter_type else None 
+                    
+                    # If generic search, we might optionally filter by type validation if we trust data purity,
+                    # but typically just querying the namespace is enough.
+                    # Let's be safe: if searching seattle_directory, filter by type='person' just in case data is mixed?
+                    # Actually, data is siloed. Let's just trust namespace.
+                    
+                    query_obj = SearchQuery(
+                        inputs={"text": query_text},
+                        top_k=top_k,
+                        filter=current_filter
+                    )
+                    
+                    results = self.index.search_records(
+                        namespace=ns,
+                        query=query_obj
+                    )
 
-            for hit in hits:
-                # hit might be object or dict
-                _id = getattr(hit, '_id', None) or hit.get('_id')
-                # fields contains our metadata
-                fields = getattr(hit, 'fields', {}) or hit.get('fields', {})
-                
-                matches.append({
-                    'id': _id,
-                    'metadata': fields
-                })
+                    # Extract hits
+                    hits = []
+                    if hasattr(results, 'result'): # v7 object style
+                        hits = getattr(results.result, 'hits', [])
+                    elif isinstance(results, dict):
+                        if 'result' in results and 'hits' in results['result']:
+                            hits = results['result']['hits']
+                        elif 'hits' in results:
+                            hits = results['hits']
+                    
+                    if not hits and hasattr(results, 'hits'):
+                         hits = results.hits
+
+                    for hit in hits:
+                        _id = getattr(hit, '_id', None) or hit.get('_id')
+                        fields = getattr(hit, 'fields', {}) or hit.get('fields', {})
+                        score = getattr(hit, '_score', 0.0) or hit.get('_score', 0.0)
+                        
+                        all_matches.append({
+                            'id': _id,
+                            'metadata': fields,
+                            'score': score
+                        })
+                except Exception as ns_err:
+                     logger.error(f"Error querying namespace {ns}: {ns_err}")
+                     continue
+
+            # Sort combined results by score descending
+            all_matches.sort(key=lambda x: x['score'], reverse=True)
+            
+            # Take top_k from combined
+            matches = all_matches[:top_k]
+
             if not matches:
                 return {"text": "I couldn't find any relevant information in the database.", "variables": {}}
             

@@ -17,5 +17,10 @@ test_query("Joe Riley", filter_type='person')
 # 2. Test Property Search
 test_query("Monte Villa Center", filter_type='property')
 
-# 3. Test Generic Search
-test_query("Joe Riley")
+# 3. Test Generic Search (Should find Joe Riley in directory AND/OR Monte Villa in listings)
+print("\n--- Testing Universal Search (No Filter) ---")
+print("Searching for 'Joe'...")
+test_query("Joe")
+
+print("\nSearching for 'Monte'...")
+test_query("Monte")
