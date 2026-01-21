@@ -592,20 +592,34 @@ class GenericCrawler:
                     const els = Array.from(document.querySelectorAll('a, button, div.cbre-c-pd-hero__button'));
                     const b = els.find(el => el.innerText.includes('Brochure'));
                     if (!b) return null;
+                    
+                    // Priority 1: Direct link
                     if (b.tagName === 'A') return b.href;
-                    // If it's a button/div, try to find a link inside it or its parent
-                    const parentLink = b.closest('a');
-                    if (parentLink) return parentLink.href;
-                    const childLink = b.querySelector('a');
-                    if (childLink) return childLink.href;
+                    
+                    // Priority 2: Closest link
+                    const pLink = b.closest('a');
+                    if (pLink) return pLink.href;
+                    
+                    const cLink = b.querySelector('a');
+                    if (cLink) return cLink.href;
+                    
                     return null;
                 }
                 """
                 b_url = self.page.evaluate(search_js)
                 if b_url:
-                    if b_url.startswith('/'): b_url = f"https://www.cbre.com{b_url}"
-                    data['Brochure URL'] = b_url
-                    print(f"    Found Brochure (Advanced): {data['Brochure URL']}")
+                    # STRICT CHECK: Reject if it's just the current page URL or doesn't look like a file/asset
+                    current_path = property_url.split('?')[0].rstrip('/')
+                    check_url = b_url.split('?')[0].rstrip('/')
+                    
+                    is_file = any(ext in b_url.lower() for ext in ['.pdf', '.doc', '.zip', 'fileassets', 'resources'])
+                    
+                    if check_url != current_path and is_file:
+                        if b_url.startswith('/'): b_url = f"https://www.cbre.com{b_url}"
+                        data['Brochure URL'] = b_url
+                        print(f"    Found Brochure (Verified): {data['Brochure URL']}")
+                    else:
+                        print(f"    Ignored False Brochure (Match/Non-file): {b_url[:50]}...")
             except: pass
 
             # --- 3. Contact For Details Modal (Optional Fallback) ---
@@ -650,7 +664,7 @@ class GenericCrawler:
                         
                         if broker_info.get('Name') or broker_info.get('Phones'):
                             data['Brokers'].append(broker_info)
-                            print(f"    - Agent: {broker_info.get('Name')} | {broker_info.get('Phones')}")
+                            print(f"    - Agent Found: {broker_info.get('Name')}")
                             
                     if not data['Brokers']:
                         print("    No brokers found in modal. Trying greedy text search...")
@@ -661,23 +675,12 @@ class GenericCrawler:
                             phones = list(set(re.findall(r'(\d{3}[-\.\s]??\d{3}[-\.\s]??\d{4})', txt)))
                             if emails or phones:
                                 data['Brokers'].append({'Name': 'Alternative Contact', 'Phones': phones, 'Emails': emails})
-                                print(f"    - Greedy Contacts: {len(phones)} phones, {len(emails)} emails")
+                                print(f"    - Greedy Contacts Found: {len(phones)} phones, {len(emails)} emails")
                         except: pass
                     if not btns:
                         print("    'Contact For Details' button not found.")
                 except Exception as e:
                     print(f"    Modal handling skipped/failed: {e}")
-
-            # --- 3. Brochure ---
-            try:
-                brochure_el = self.page.query_selector('a:has-text("Brochure")')
-                if brochure_el:
-                    b_url = brochure_el.get_attribute('href')
-                    if b_url and b_url.startswith('/'):
-                        b_url = f"https://www.cbre.com{b_url}"
-                    data['Brochure URL'] = b_url
-                    print(f"    Found Brochure: {data['Brochure URL']}")
-            except: pass
 
             # --- 4. Precision Extraction (Address & Highlights) ---
             try:
@@ -689,14 +692,15 @@ class GenericCrawler:
                     document.querySelectorAll(searchTags.join(',')).forEach(el => {
                         const txt = el.innerText.trim().toLowerCase();
                         let key = null;
-                        if (txt === "highlights") key = "Highlights";
-                        else if (txt === "overview") key = "Overview";
+                        if (txt === "highlights" || txt.includes("highlights")) key = "Highlights";
+                        else if (txt === "overview" || txt.includes("overview")) key = "Overview";
+                        
                         if (key && !sections[key]) {
                             let content = [];
                             let runner = el.nextElementSibling;
                             if (!runner && el.parentElement) runner = el.parentElement.nextElementSibling;
                             let b = 0;
-                            while (runner && b < 3) {
+                            while (runner && b < 10) { // Check more blocks
                                 if (['H1','H2','H3','H4'].includes(runner.tagName)) break;
                                 const t = getCleanText(runner);
                                 if (t.length > 5) { content.push(t); b++; }
@@ -705,20 +709,27 @@ class GenericCrawler:
                             sections[key] = content.join('\\n');
                         }
                     });
+                    
                     let addr = "";
-                    const sels = ['.cbre-c-pd-hero__address', '.cbre-c-pd-hero__sub-title', 'address'];
+                    const sels = ['.cbre-c-pd-hero__address', '.cbre-c-pd-hero__sub-title', 'address', '.cbre-c-pd-description__address'];
                     for (const s of sels) {
                         const el = document.querySelector(s);
-                        if (el && el.innerText.trim().length < 200) { addr = el.innerText.trim(); break; }
+                        if (el && el.innerText.trim().length > 5 && el.innerText.trim().length < 200) { 
+                            addr = el.innerText.trim(); 
+                            break; 
+                        }
                     }
+                    
                     if (!addr) {
-                        const candidates = Array.from(document.querySelectorAll('p, div'))
+                        const candidates = Array.from(document.querySelectorAll('p, div, span'))
                             .filter(el => el.innerText.trim().length > 10 && el.innerText.trim().length < 100 && el.innerText.match(/[A-Z]{2}\\s+\\d{5}/));
                         if (candidates.length > 0) addr = candidates[0].innerText.trim();
                     }
+                    
                     let fb = "";
-                    const m = document.querySelector('.cbre-c-pd-overview__description, .cbre-c-pd-description');
-                    if (m) fb = m.innerText.trim().slice(0, 1000);
+                    const m = document.querySelector('.cbre-c-pd-overview__description, .cbre-c-pd-description, .cbre-c-pd-text-media__description, #overview');
+                    if (m) fb = m.innerText.trim().slice(0, 1500);
+                    
                     return { highlights: sections['Highlights']||"", overview: sections['Overview']||"", fallback: fb, address: addr };
                 }
                 """
@@ -732,16 +743,16 @@ class GenericCrawler:
                 data['Description'] = "\\n\\n".join(parts)
                 
                 # Set Address
-                if res.get('address'):
-                    # Merge if we already have some from H1
-                    if data['Address'] and res['address'] not in data['Address']:
-                        # If H1 had "10900 NE 8th" and JS got "Bellevue, WA", join them
-                        if len(data['Address']) < len(res['address']):
-                            data['Address'] = f"{data['Address']}, {res['address']}"
-                        else:
-                            pass # Keep the one from H1 if it's more detailed
+                raw_addr = res.get('address', '')
+                if raw_addr:
+                    # If we have Address from H1 already, check if raw_addr is just city/state
+                    if data['Address']:
+                        # If H1 had street, and raw_addr is city/state, join them properly
+                        # But prevent "Street, Street, City"
+                        if raw_addr.lower() not in data['Address'].lower():
+                            data['Address'] = f"{data['Address']}, {raw_addr}"
                     else:
-                        data['Address'] = res['address']
+                        data['Address'] = raw_addr
 
                 # Final de-duplicate Name from Address
                 if data['Address'] and data['Property Name']:

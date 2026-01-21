@@ -152,13 +152,19 @@ def main():
                          print(f"PROPERTY NAME: {p_data.get('Property Name', 'N/A')}")
                          print(f"ADDRESS: {p_data.get('Address', 'N/A')}")
                          print(f"BROCHURE URL: {p_data.get('Brochure URL', 'Not Found')}")
-                         
                          brokers = p_data.get('Brokers', [])
-                         broker_names = [b.get('Name') for b in brokers if b.get('Name')]
-                         print(f"CONNECTED AGENTS: {', '.join(broker_names) if broker_names else 'None found'}")
+                         if brokers:
+                             print(f"CONNECTED AGENTS:")
+                             for b in brokers:
+                                 contact_str = f"     - {b.get('Name')}"
+                                 if b.get('Phones'): contact_str += f" | 📞 {'/'.join(b.get('Phones'))}"
+                                 if b.get('Emails'): contact_str += f" | ✉️ {'/'.join(b.get('Emails'))}"
+                                 print(contact_str)
+                         else:
+                             print(f"CONNECTED AGENTS: None found")
                          
                          if p_data.get('Description'):
-                             print(f"DESCRIPTION: {p_data['Description'][:200]}...")
+                             print(f"DESCRIPTION: {p_data['Description'][:300].strip()}...")
                          print(f"----------------------------------------\n")
                          
                          time.sleep(2)
