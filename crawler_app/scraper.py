@@ -729,22 +729,40 @@ class GenericCrawler:
                 }
                 """
                 res = self.page.evaluate(js_greedy)
+                print(f"    JS Greedy Result Keys: {list(res.keys())}")
                 
                 parts = []
-                if res['highlights']: parts.append(f"HIGHLIGHTS:\\n{res['highlights']}")
-                if res['overview']: parts.append(f"OVERVIEW:\\n{res['overview']}")
+                if res.get('highlights'): 
+                    print(f"    Raw Highlights found: {len(res['highlights'])} chars")
+                    parts.append(f"HIGHLIGHTS:\\n{res['highlights']}")
+                
+                if res.get('overview'): 
+                    print(f"    Raw Overview found: {len(res['overview'])} chars")
+                    parts.append(f"OVERVIEW:\\n{res['overview']}")
                 
                 # If both empty, use fallback
-                if not parts and res['fallback']:
+                if not parts and res.get('fallback'):
+                    print(f"    Using Fallback Description: {len(res['fallback'])} chars")
                     parts.append(res['fallback'])
                     
                 data['Description'] = "\\n\\n".join(parts)
-                if res['address']:
+                
+                if res.get('address'):
                     data['Address'] = res['address']
+                elif not data['Address']:
+                    # One more try via python for the address
+                    try:
+                        h1 = self.page.query_selector('h1')
+                        if h1:
+                            # Usually address is the next sibling or near it
+                            parent = h1.evaluate_handle('el => el.parentElement')
+                            if parent:
+                                data['Address'] = parent.inner_text().replace(data['Property Name'], "").strip().split('\\n')[0]
+                    except:
+                        pass
                     
-                print(f"    Extracted Description Length: {len(data['Description'])}")
-                if data['Address']:
-                    print(f"    Found Address: {data['Address']}")
+                print(f"    Final Description Length: {len(data['Description'])}")
+                print(f"    Final Address: '{data['Address']}'")
 
             except Exception as e:
                 print(f"    Error in greedy extraction: {e}")
