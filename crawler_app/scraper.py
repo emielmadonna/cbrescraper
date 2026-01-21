@@ -198,6 +198,8 @@ class GenericCrawler:
             'URL': profile_url, 
             'First Name': '', 
             'Last Name': '',
+            'Title': '',
+            'Email': '',
             'Phone': '', 
             'Address Line': '',
             'City': '',
@@ -251,77 +253,73 @@ class GenericCrawler:
             return data
 
         try:
-            # --- 1. Extract Name (First/Last) ---
+            # --- 1. Name & Title ---
             try:
-                # CBRE Name Selector
-                name_val = ""
                 name_el = self.page.query_selector("h1.cbre-c-personHero__name")
                 if name_el:
                     name_val = name_el.inner_text().strip()
-                
-                if name_val:
                     parts = name_val.split(" ", 1)
                     data['First Name'] = parts[0]
                     data['Last Name'] = parts[1] if len(parts) > 1 else ""
-                else:
-                    data['First Name'] = "Not Found"
+                
+                # Title often in personHero sub-heading
+                title_el = self.page.query_selector(".cbre-c-personHero__designation") or \
+                           self.page.query_selector(".cbre-c-personHero__title")
+                if title_el:
+                    data['Title'] = title_el.inner_text().strip()
             except Exception as e:
-                 print(f"Error parsing name: {e}")
+                 print(f"Error parsing name/title: {e}")
 
-            # --- 2. Extract Phone (Direct, Mobile, Office) & vCard ---
+            # --- 2. Phone, Email & vCard ---
             try:
                 js_contact = """
                     () => {
-                        const data = {phones: [], vcard: null};
-                        
-                        // Helper to clean phone
-                        const cleanPhone = (str) => str.replace('tel:', '').trim();
+                        const res = {phones: [], vcard: null, email: null};
+                        const clean = (s) => s ? s.replace('tel:', '').replace('mailto:', '').trim() : "";
 
-                        // Check Hero Section (Direct/Mobile)
+                        // 1. Hero Section
                         const hero = document.querySelector('.cbre-c-personHero');
                         if (hero) {
-                            const heroPhones = Array.from(hero.querySelectorAll('a[href^="tel:"]'));
-                            heroPhones.forEach(a => {
-                                const label = a.getAttribute('aria-label') || 'Phone';
-                                const num = cleanPhone(a.getAttribute('href'));
-                                if (num) {
-                                    data.phones.push(`${label}: ${num}`);
-                                }
+                            hero.querySelectorAll('a[href^="tel:"]').forEach(a => {
+                                res.phones.push(`${a.getAttribute('aria-label')||'Phone'}: ${clean(a.getAttribute('href'))}`);
                             });
-                            
-                            // vCard
-                            const vcardLink = hero.querySelector('a[aria-label="Download Contact Card"]');
-                            if (vcardLink) data.vcard = vcardLink.href;
+                            hero.querySelectorAll('a[href^="mailto:"]').forEach(a => {
+                                if(!res.email) res.email = clean(a.getAttribute('href'));
+                            });
+                            const vc = hero.querySelector('a[aria-label*="Contact Card"]');
+                            if (vc) res.vcard = vc.href;
                         }
                         
-                        // Check Office Card
-                        const officeCard = document.querySelector('.cbre-c-inlineCards--office');
-                        if (officeCard) {
-                            const officePhones = Array.from(officeCard.querySelectorAll('a[href^="tel:"]'));
-                            officePhones.forEach(a => {
-                                const label = a.getAttribute('aria-label') || 'Office';
-                                const num = cleanPhone(a.getAttribute('href'));
-                                if (num) {
-                                    data.phones.push(`Office ${label}: ${num}`);
-                                }
+                        // 2. Office Cards
+                        const office = document.querySelector('.cbre-c-inlineCards--office');
+                        if (office) {
+                            office.querySelectorAll('a[href^="tel:"]').forEach(a => {
+                                res.phones.push(`Office: ${clean(a.getAttribute('href'))}`);
+                            });
+                            office.querySelectorAll('a[href^="mailto:"]').forEach(a => {
+                                if(!res.email) res.email = clean(a.getAttribute('href'));
                             });
                         }
+                        
+                        // 3. Fallback Greedy Email
+                        if (!res.email) {
+                            const m = document.body.innerText.match(/[\\w\\.-]+@[\\w\\.-]+\\.\\w+/);
+                            if (m) res.email = m[0];
+                        }
 
-                        return data;
+                        return res;
                     }
                 """
                 contact_val = self.page.evaluate(js_contact)
-                data['Phone'] = " | ".join(contact_val['phones']) if contact_val['phones'] else "Not Found"
+                data['Phone'] = " | ".join(list(set(contact_val['phones']))) if contact_val['phones'] else "Not Found"
+                data['Email'] = contact_val['email'] or "Not Found"
                 if contact_val['vcard']:
                     v = contact_val['vcard']
-                    if v.startswith('/'):
-                        v = f"https://www.cbre.com{v}"
-                    data['vCardURL'] = v
+                    data['vCardURL'] = f"https://www.cbre.com{v}" if v.startswith('/') else v
                 else:
                     data['vCardURL'] = "Not Found"
             except Exception as e:
-                data['Phone'] = f"Error: {e}"
-                data['vCardURL'] = "Error"
+                print(f"Error parsing contact: {e}")
 
             # --- 3. Extract & Parse Address ---
             try:

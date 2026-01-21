@@ -68,26 +68,27 @@ class VectorDB:
 
             # Create Text Blob for Search
             # "Joe Riley - Senior Vice President at CBRE. Seattle, WA. Experience: ..."
+            # Create Search Text Blob
             name = f"{person_data.get('First Name', '')} {person_data.get('Last Name', '')}".strip()
-            
-            # Extract simple text from Experience (truncate if too long)
+            location = f"{person_data.get('City', '')}, {person_data.get('State', '')}".strip(", ")
             experience = person_data.get('Experience', '')
-            if len(experience) > 8000: experience = experience[:8000]
+            if len(experience) > 6000: experience = experience[:6000]
             
-            text_blob = f"{name} - CBRE Professional. Located in {person_data.get('City', '')}, {person_data.get('State', '')}. \n\nExperience: {experience}"
+            text_blob = f"NAME: {name}\nLOCATION: {location}\nEXPERIENCE: {experience}"
             
             # Generate Embedding
             vector = self.get_embedding(text_blob)
             if not vector: return
 
-            # Metadata
+            # Metadata (Strictly structured)
             metadata = {
                 'type': 'person',
                 'url': url,
                 'first_name': person_data.get('First Name', ''),
                 'last_name': person_data.get('Last Name', ''),
-                'phones': person_data.get('Phone', ''),
-                'email': '', # Scraper doesnt get email for main profile yet?
+                'name': name,
+                'phones': person_data.get('Phone', ''), # Usually a string or list
+                'email': person_data.get('Email', ''),
                 'city': person_data.get('City', ''),
                 'state': person_data.get('State', ''),
                 'text': text_blob,
@@ -97,7 +98,7 @@ class VectorDB:
             
             # Upsert
             self.index.upsert(vectors=[(url, vector, metadata)])
-            print(f"Successfully upserted person: {name}")
+            print(f"Successfully upserted person to Pinecone: {name}")
             
         except Exception as e:
             print(f"Error upserting person: {e}")

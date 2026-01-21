@@ -92,7 +92,10 @@ def main():
                         print(f"TITLE: {p_data.get('Title', 'N/A')}")
                         print(f"EMAIL: {p_data.get('Email', 'N/A')}")
                         print(f"PHONE: {p_data.get('Phone', 'N/A')}")
-                        print(f"LOCATION: {p_data.get('Location', 'N/A')}")
+                        loc = p_data.get('Full Address', 'N/A').replace('\n', ', ')
+                        print(f"LOCATION: {loc}")
+                        if p_data.get('Experience'):
+                            print(f"EXPERIENCE: {p_data['Experience'][:200].strip()}...")
                         print(f"----------------------------------------\n")
                         
                         time.sleep(2)
