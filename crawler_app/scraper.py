@@ -728,44 +728,119 @@ class GenericCrawler:
                     };
                 }
                 """
+            # --- Highlights / Overview / Description (Precision Extraction) ---
+            try:
+                js_greedy = """
+                () => {
+                    const sections = {};
+                    const getCleanText = (el) => el ? el.innerText.replace(/\\s+/g, ' ').trim() : "";
+
+                    // 1. Find Specific Sections (Highlights/Overview)
+                    const searchTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'div.cbre-c-pd-overview__title', 'strong'];
+                    document.querySelectorAll(searchTags.join(',')).forEach(el => {
+                        const txt = el.innerText.trim().toLowerCase();
+                        let key = null;
+                        if (txt === "highlights") key = "Highlights";
+                        else if (txt === "overview" || txt === "property overview") key = "Overview";
+                        
+                        if (key && !sections[key]) {
+                            let content = [];
+                            let runner = el.nextElementSibling;
+                            if (!runner && el.parentElement) runner = el.parentElement.nextElementSibling;
+                            
+                            let blocks = 0;
+                            while (runner && blocks < 3) {
+                                if (['H1', 'H2', 'H3', 'H4'].includes(runner.tagName)) break;
+                                const t = getCleanText(runner);
+                                if (t && t.length > 5) {
+                                    content.push(t);
+                                    blocks++;
+                                }
+                                runner = runner.nextElementSibling;
+                            }
+                            sections[key] = content.join('\\n');
+                        }
+                    });
+
+                    // 2. Precision Address Search
+                    let address = "";
+                    // Preferred selectors
+                    const addrSels = [
+                        '.cbre-c-pd-hero__address',
+                        '.cbre-c-pd-hero__sub-title',
+                        'address',
+                        '.cbre-c-pd-description__address'
+                    ];
+                    for (const s of addrSels) {
+                        const el = document.querySelector(s);
+                        if (el && el.innerText.trim() && el.innerText.length < 200) {
+                            address = el.innerText.trim();
+                            break;
+                        }
+                    }
+
+                    // Strict Fallback for Address (only short elements)
+                    if (!address) {
+                        const allCandidates = Array.from(document.querySelectorAll('p, span, div'))
+                            .filter(el => {
+                                const t = el.innerText.trim();
+                                return t.length > 10 && t.length < 100 && t.match(/[A-Z]{2}\\s+\\d{5}/);
+                            });
+                        if (allCandidates.length > 0) address = allCandidates[0].innerText.trim();
+                    }
+
+                    // 3. Description Fallback (Center content only)
+                    let fallback = "";
+                    const main = document.querySelector('.cbre-c-pd-overview__description, .cbre-c-pd-description');
+                    if (main) fallback = main.innerText.trim().slice(0, 1000);
+
+                    return { 
+                        highlights: sections['Highlights'] || "", 
+                        overview: sections['Overview'] || "",
+                        fallback: fallback,
+                        address: address
+                    };
+                }
+                """
                 res = self.page.evaluate(js_greedy)
-                print(f"    JS Greedy Result Keys: {list(res.keys())}")
                 
+                # Build Description
                 parts = []
-                if res.get('highlights'): 
-                    print(f"    Raw Highlights found: {len(res['highlights'])} chars")
-                    parts.append(f"HIGHLIGHTS:\\n{res['highlights']}")
-                
-                if res.get('overview'): 
-                    print(f"    Raw Overview found: {len(res['overview'])} chars")
-                    parts.append(f"OVERVIEW:\\n{res['overview']}")
-                
-                # If both empty, use fallback
-                if not parts and res.get('fallback'):
-                    print(f"    Using Fallback Description: {len(res['fallback'])} chars")
-                    parts.append(res['fallback'])
+                if res.get('highlights'): parts.append(f"Highlights:\\n{res['highlights']}")
+                if res.get('overview'): parts.append(f"Overview:\\n{res['overview']}")
+                if not parts and res.get('fallback'): parts.append(res['fallback'])
                     
                 data['Description'] = "\\n\\n".join(parts)
                 
-                if res.get('address'):
+                # Set Address if not already found
+                if res.get('address') and len(res['address']) < 200:
                     data['Address'] = res['address']
-                elif not data['Address']:
-                    # One more try via python for the address
+                
+                # Final cleanup: if Address is still empty or looks like trash (too long), try H1 parent
+                if not data['Address'] or len(data['Address']) > 200:
                     try:
                         h1 = self.page.query_selector('h1')
                         if h1:
-                            # Usually address is the next sibling or near it
-                            parent = h1.evaluate_handle('el => el.parentElement')
-                            if parent:
-                                data['Address'] = parent.inner_text().replace(data['Property Name'], "").strip().split('\\n')[0]
-                    except:
-                        pass
-                    
-                print(f"    Final Description Length: {len(data['Description'])}")
-                print(f"    Final Address: '{data['Address']}'")
+                            # In CBRE, address is often the next line in the hero wrap
+                            hero = h1.evaluate_handle('el => el.closest(".cbre-c-pd-hero") || el.parentElement')
+                            if hero:
+                                lines = hero.inner_text().split('\\n')
+                                # Usually Name is 1st line, Address is 2nd or 3rd
+                                for line in lines:
+                                    line = line.strip()
+                                    if line and line != data['Property Name'] and len(line) < 150 and any(char.isdigit() for char in line):
+                                        data['Address'] = line
+                                        break
+                    except: pass
+
+                # Verify extraction
+                if data['Address']: 
+                    print(f"    > Extracted Address: {data['Address']}")
+                if data['Description']:
+                    print(f"    > Extracted Description: {len(data['Description'])} chars")
 
             except Exception as e:
-                print(f"    Error in greedy extraction: {e}")
+                print(f"    Error in precision extraction: {e}")
 
         except Exception as e:
             print(f"Error scraping property {property_url}: {e}")

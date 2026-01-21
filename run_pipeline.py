@@ -91,7 +91,7 @@ def main():
                         print(f"   > Error scraping profile: {e}")
                 
                 print("--- BATCH COMPLETE ---")
-                print(json.dumps(all_data, indent=2))
+                # print(json.dumps(all_data, indent=2))
                 
             else:
                 # Single Profile Mode
@@ -143,7 +143,7 @@ def main():
                          print(f"   > Error scraping property: {e}")
 
                  print("--- BATCH COMPLETE ---")
-                 print(json.dumps(all_data, indent=2))
+                 # print(json.dumps(all_data, indent=2)) # Reduced verbosity
 
              else:
                 print("Running Single Property Scraper...")

@@ -22,7 +22,8 @@ export default function Home() {
 
   useEffect(() => {
     // WebSocket for logs
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/logs";
+    const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `ws://${host}:8000/ws/logs`;
     const ws = new WebSocket(wsUrl);
     ws.onmessage = (event) => {
       const message = event.data;
@@ -49,7 +50,8 @@ export default function Home() {
       if (mode === "person") endpoint = "/api/scrape/person";
       if (mode === "property") endpoint = "/api/scrape/property";
 
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || `http://${host}:8000`;
       await fetch(`${baseUrl}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -69,7 +71,8 @@ export default function Home() {
 
   const stopScrape = async () => {
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || `http://${host}:8000`;
       await fetch(`${baseUrl}/api/stop-scrape`, { method: "POST" });
       setIsScraping(false);
     } catch (error) {
@@ -120,7 +123,8 @@ export default function Home() {
     setIsQuerying(true);
     setQueryResult("");
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || `http://${host}:8000`;
       const res = await fetch(`${baseUrl}/api/query-voice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
