@@ -169,14 +169,18 @@ def main():
                  # print(json.dumps(all_data, indent=2)) # Reduced verbosity
 
              else:
-                print("Running Single Property Scraper...")
-                data = crawler.scrape_property(args.url)
-                print("--- DATA EXTRACTED ---")
-                print(f"   Name: {data.get('Property Name')}")
-                print(f"   Address: {data.get('Address')}")
-                print(f"   Brochure: {data.get('Brochure URL')}")
-                print(f"   Agents: {len(data.get('Brokers', []))}")
-                # print(json.dumps(data, indent=2))
+                print("\n✅ [PROPERTY FOUND]")
+                print(f"PROPERTY NAME: {data.get('Property Name', 'N/A')}")
+                print(f"ADDRESS: {data.get('Address', 'N/A')}")
+                print(f"BROCHURE URL: {data.get('Brochure URL', 'Not Found')}")
+                
+                brokers = data.get('Brokers', [])
+                broker_names = [b.get('Name') for b in brokers if b.get('Name')]
+                print(f"CONNECTED AGENTS: {', '.join(broker_names) if broker_names else 'None found'}")
+                
+                if data.get('Description'):
+                    print(f"DESCRIPTION: {data['Description'][:200]}...")
+                print(f"----------------------------------------\n")
                 
         else:
             # Likely a directory

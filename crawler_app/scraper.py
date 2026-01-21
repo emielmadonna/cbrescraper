@@ -545,7 +545,9 @@ class GenericCrawler:
             'URL': property_url,
             'Property Name': '',
             'Address': '',
-            'Brokers': []
+            'Description': '',
+            'Brokers': [],
+            'Brochure URL': 'Not Found'
         }
         
         print(f"  > Property Scraper visiting: {property_url}")
@@ -556,89 +558,65 @@ class GenericCrawler:
         try:
             self.page.goto(property_url, timeout=30000, wait_until='domcontentloaded')
             
-            # --- 1. Basic Property Info (Hero Section) ---
-            try:
-                # Wait for at least the H1 or the Contact button to indicate load
-                try:
-                    self.page.wait_for_selector('h1', timeout=10000)
-                except:
-                    print("    Timeout waiting for H1.")
-
-                # Example selectors - adjust based on actual page structure
-                title_el = self.page.query_selector('h1')
-                if title_el:
-                    data['Property Name'] = title_el.inner_text().strip()
-                    
-                addr_el = self.page.query_selector('.cbre-c-pd-hero__address') or self.page.query_selector('address')
-                if addr_el:
-                    data['Address'] = addr_el.inner_text().strip()
-            except Exception as e:
-                print(f"    Error scraping basic info: {e}")
+            # --- 1. Basic Info (Name & Initial Address) ---
+            title_el = self.page.query_selector('h1')
+            if title_el:
+                data['Property Name'] = title_el.inner_text().strip()
 
             # --- 2. Contact For Details Modal ---
             try:
-                # Look for the Contact Button with a wait
                 btn_selector = '.cbre-c-pd-brokerCard__button'
-                try:
-                    self.page.wait_for_selector(btn_selector, timeout=1000)
-                except:
-                    print("    Timeout waiting for contact button (it might not exist).")
-
+                self.page.wait_for_selector(btn_selector, timeout=2000)
                 contact_btn = self.page.query_selector(btn_selector)
                 
                 if contact_btn:
-                    print("    Clicking 'Contact For Details' button (JS force)...")
-                    try:
-                        # DIRECT JS Click - Fastest, ignores visibility/scroll headers
-                        self.page.evaluate('el => el.click()', contact_btn)
-                    except Exception as e:
-                        print(f"    JS click failed: {e}")
+                    print("    Clicking 'Contact For Details' button...")
+                    self.page.evaluate('el => el.click()', contact_btn)
                     
-                    # Wait for modal to appear
                     modal_selector = '.cbre-c-pl-contact-form'
-                    try:
-                        self.page.wait_for_selector(modal_selector, timeout=5000)
-                        print("    Modal appeared.")
+                    self.page.wait_for_selector(modal_selector, timeout=5000)
+                    print("    Modal appeared.")
+                    
+                    # Try primary selector first, fallback to any cards
+                    brokers_els = self.page.query_selector_all('.cbre-c-pl-contact-form__broker-content') or \
+                                  self.page.query_selector_all('.cbre-c-pl-contact-form__broker') or \
+                                  self.page.query_selector_all('[class*="broker"]')
+
+                    for broker_el in brokers_els:
+                        broker_info = {}
+                        name_el = broker_el.query_selector('[class*="name"]') or broker_el.query_selector('strong, span, h4')
+                        if name_el:
+                            broker_info['Name'] = name_el.inner_text().strip()
+                            
+                        # Phones & Emails
+                        phones_els = broker_el.query_selector_all('a[href^="tel:"]')
+                        broker_info['Phones'] = [p.inner_text().strip() for p in phones_els]
                         
-                        # Extract Broker Info from Modal
-                        brokers_els = self.page.query_selector_all('.cbre-c-pl-contact-form__broker-content')
+                        email_els = broker_el.query_selector_all('a[href^="mailto:"]')
+                        broker_info['Emails'] = [e.inner_text().replace('mailto:', '').strip() for e in email_els]
                         
-                        for broker_el in brokers_els:
-                            broker_info = {}
+                        if broker_info.get('Name') or broker_info.get('Phones'):
+                            data['Brokers'].append(broker_info)
+                            print(f"    - Agent: {broker_info.get('Name')} | {broker_info.get('Phones')}")
                             
-                            # Name
-                            name_el = broker_el.query_selector('.cbre-c-pl-contact-form__broker-name')
-                            if name_el:
-                                broker_info['Name'] = name_el.inner_text().strip()
-                                
-                            # Phones
-                            phones_els = broker_el.query_selector_all('a[href^="tel:"]')
-                            phones = [p.inner_text().strip() for p in phones_els]
-                            broker_info['Phones'] = phones
-                            
-                            # Emails
-                            email_els = broker_el.query_selector_all('a[href^="mailto:"]')
-                            emails = [e.inner_text().strip() for e in email_els]
-                            broker_info['Emails'] = emails
-                            
-                            if broker_info:
-                                data['Brokers'].append(broker_info)
-                                
-                        if not data['Brokers']:
-                            print("    No brokers found in list.")
-                            
-                    except Exception as e:
-                        print(f"    Error waiting for or parsing modal: {e}")
+                    if not data['Brokers']:
+                        print("    No brokers found in modal. Trying greedy text search...")
+                        try:
+                            txt = self.page.inner_text(modal_selector)
+                            import re
+                            emails = list(set(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', txt)))
+                            phones = list(set(re.findall(r'(\d{3}[-\.\s]??\d{3}[-\.\s]??\d{4})', txt)))
+                            if emails or phones:
+                                data['Brokers'].append({'Name': 'Alternative Contact', 'Phones': phones, 'Emails': emails})
+                                print(f"    - Greedy Contacts: {len(phones)} phones, {len(emails)} emails")
+                        except: pass
                 else:
                     print("    'Contact For Details' button not found.")
-                    
             except Exception as e:
-                print(f"    Error handling contact modal: {e}")
+                print(f"    Modal handling skipped/failed: {e}")
 
-            # --- 3. Extra Data: Brochure & Highlights ---
+            # --- 3. Brochure ---
             try:
-                # Brochure
-                # Look for any link containing text "Brochure"
                 brochure_el = self.page.query_selector('a:has-text("Brochure")')
                 if brochure_el:
                     b_url = brochure_el.get_attribute('href')
@@ -646,130 +624,74 @@ class GenericCrawler:
                         b_url = f"https://www.cbre.com{b_url}"
                     data['Brochure URL'] = b_url
                     print(f"    Found Brochure: {data['Brochure URL']}")
-                else:
-                    data['Brochure URL'] = "Not Found"
+            except: pass
 
-            except Exception as e:
-                print(f"    Error extracting brochure: {e}")
-
-            # --- Highlights / Overview / Description (Precision Extraction) ---
+            # --- 4. Precision Extraction (Address & Highlights) ---
             try:
-                js_greedy = """
+                js_script = """
                 () => {
                     const sections = {};
                     const getCleanText = (el) => el ? el.innerText.replace(/\\s+/g, ' ').trim() : "";
-
-                    // 1. Find Specific Sections (Highlights/Overview)
                     const searchTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'div.cbre-c-pd-overview__title', 'strong'];
                     document.querySelectorAll(searchTags.join(',')).forEach(el => {
                         const txt = el.innerText.trim().toLowerCase();
                         let key = null;
                         if (txt === "highlights") key = "Highlights";
-                        else if (txt === "overview" || txt === "property overview") key = "Overview";
-                        
+                        else if (txt === "overview") key = "Overview";
                         if (key && !sections[key]) {
                             let content = [];
                             let runner = el.nextElementSibling;
                             if (!runner && el.parentElement) runner = el.parentElement.nextElementSibling;
-                            
-                            let blocks = 0;
-                            while (runner && blocks < 3) {
-                                if (['H1', 'H2', 'H3', 'H4'].includes(runner.tagName)) break;
+                            let b = 0;
+                            while (runner && b < 3) {
+                                if (['H1','H2','H3','H4'].includes(runner.tagName)) break;
                                 const t = getCleanText(runner);
-                                if (t && t.length > 5) {
-                                    content.push(t);
-                                    blocks++;
-                                }
+                                if (t.length > 5) { content.push(t); b++; }
                                 runner = runner.nextElementSibling;
                             }
                             sections[key] = content.join('\\n');
                         }
                     });
-
-                    // 2. Precision Address Search
-                    let address = "";
-                    // Preferred selectors
-                    const addrSels = [
-                        '.cbre-c-pd-hero__address',
-                        '.cbre-c-pd-hero__sub-title',
-                        'address',
-                        '.cbre-c-pd-description__address'
-                    ];
-                    for (const s of addrSels) {
+                    let addr = "";
+                    const sels = ['.cbre-c-pd-hero__address', '.cbre-c-pd-hero__sub-title', 'address'];
+                    for (const s of sels) {
                         const el = document.querySelector(s);
-                        if (el && el.innerText.trim() && el.innerText.length < 200) {
-                            address = el.innerText.trim();
-                            break;
-                        }
+                        if (el && el.innerText.trim().length < 200) { addr = el.innerText.trim(); break; }
                     }
-
-                    // Strict Fallback for Address (only short elements)
-                    if (!address) {
-                        const allCandidates = Array.from(document.querySelectorAll('p, span, div'))
-                            .filter(el => {
-                                const t = el.innerText.trim();
-                                return t.length > 10 && t.length < 100 && t.match(/[A-Z]{2}\\s+\\d{5}/);
-                            });
-                        if (allCandidates.length > 0) address = allCandidates[0].innerText.trim();
+                    if (!addr) {
+                        const candidates = Array.from(document.querySelectorAll('p, div'))
+                            .filter(el => el.innerText.trim().length > 10 && el.innerText.trim().length < 100 && el.innerText.match(/[A-Z]{2}\\s+\\d{5}/));
+                        if (candidates.length > 0) addr = candidates[0].innerText.trim();
                     }
-
-                    // 3. Description Fallback (Center content only)
-                    let fallback = "";
-                    const main = document.querySelector('.cbre-c-pd-overview__description, .cbre-c-pd-description');
-                    if (main) fallback = main.innerText.trim().slice(0, 1000);
-
-                    return { 
-                        highlights: sections['Highlights'] || "", 
-                        overview: sections['Overview'] || "",
-                        fallback: fallback,
-                        address: address
-                    };
+                    let fb = "";
+                    const m = document.querySelector('.cbre-c-pd-overview__description, .cbre-c-pd-description');
+                    if (m) fb = m.innerText.trim().slice(0, 1000);
+                    return { highlights: sections['Highlights']||"", overview: sections['Overview']||"", fallback: fb, address: addr };
                 }
                 """
-                res = self.page.evaluate(js_greedy)
+                res = self.page.evaluate(js_script)
                 
-                # Build Description
+                # Format Description
                 parts = []
                 if res.get('highlights'): parts.append(f"Highlights:\\n{res['highlights']}")
                 if res.get('overview'): parts.append(f"Overview:\\n{res['overview']}")
                 if not parts and res.get('fallback'): parts.append(res['fallback'])
-                    
                 data['Description'] = "\\n\\n".join(parts)
                 
-                # Set Address if not already found
-                if res.get('address') and len(res['address']) < 200:
-                    data['Address'] = res['address']
+                # Set Address
+                if res.get('address'): data['Address'] = res['address']
+                if data['Address'] and data['Property Name']:
+                    data['Address'] = data['Address'].replace(data['Property Name'], '').strip().lstrip(',').strip()
                 
-                # Final cleanup: if Address is still empty or looks like trash (too long), try H1 parent
-                if not data['Address'] or len(data['Address']) > 200:
-                    try:
-                        h1 = self.page.query_selector('h1')
-                        if h1:
-                            # In CBRE, address is often the next line in the hero wrap
-                            hero = h1.evaluate_handle('el => el.closest(".cbre-c-pd-hero") || el.parentElement')
-                            if hero:
-                                lines = hero.inner_text().split('\\n')
-                                # Usually Name is 1st line, Address is 2nd or 3rd
-                                for line in lines:
-                                    line = line.strip()
-                                    if line and line != data['Property Name'] and len(line) < 150 and any(char.isdigit() for char in line):
-                                        data['Address'] = line
-                                        break
-                    except: pass
-
-                # Verify extraction
-                if data['Address']: 
-                    print(f"    > Extracted Address: {data['Address']}")
-                if data['Description']:
-                    print(f"    > Extracted Description: {len(data['Description'])} chars")
-
+                print(f"    > Extracted Address: {data['Address']}")
+                print(f"    > Extracted Description: {len(data['Description'])} chars")
             except Exception as e:
-                print(f"    Error in precision extraction: {e}")
+                print(f"    Error in JS extraction: {e}")
 
         except Exception as e:
-            print(f"Error scraping property {property_url}: {e}")
+            print(f"Error scraping property: {e}")
             
-        # Upsert to Pinecone property index
+        # 5. Save to Vector DB
         if self.vector_db:
             self.vector_db.upsert_property(data)
             
