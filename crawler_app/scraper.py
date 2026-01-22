@@ -48,6 +48,13 @@ class GenericCrawler:
         if digits.startswith('+'):
             return digits
         
+        # Heuristic Fix for CBRE Typo (426 -> 425) behavior seen in Bothell listings
+        # 426 is an unassigned area code, 425 is correct for the region.
+        if digits.startswith("426"):
+            digits = "425" + digits[3:]
+        elif digits.startswith("1426"):
+             digits = "1425" + digits[4:]
+             
         if len(digits) == 10:
             return "+1" + digits
         elif len(digits) == 11 and digits.startswith('1'):
